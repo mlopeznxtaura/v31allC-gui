@@ -190,11 +190,24 @@ def stage3_view() -> None:
                 ts = int(time.time())
                 out = OUTPUT_DIR / f"inference_log_{ts}.jsonl"
                 out.write_text("\n".join(json.dumps(r) for r in _infer_history))
-                infer_log.push(f"✅ Exported {len(_infer_history)} turns → {out.name}")
+                infer_log.push(f"[OK] Exported {len(_infer_history)} turns -> {out.name}")
+
+            def _export_model_state():
+                try:
+                    from stage3.inference_engine.exporter import export_model
+                    eng = _get_engine()
+                    paths = export_model(eng, OUTPUT_DIR)
+                    infer_log.push(f"[OK] Exported GGUF Model Weights: {paths['gguf'].name} ({paths['gguf'].stat().st_size} bytes)")
+                    infer_log.push(f"[OK] Exported JSON Model Parameters: {paths['json'].name} ({paths['json'].stat().st_size} bytes)")
+                except Exception as ex:
+                    infer_log.push(f"✗ Export Model Error: {ex}")
 
             infer_btn.on("click", lambda: _run_infer())
             reset_btn.on("click", lambda: _reset())
-            ui.button("Export Inference Log", on_click=_export_infer).props("dense outline color=rose")
+            
+            with ui.row().classes("gap-2 mt-1"):
+                ui.button("Export Inference Log", on_click=_export_infer).props("dense outline color=rose")
+                ui.button("Export Model (.gguf)", on_click=_export_model_state).props("dense outline color=rose")
 
         # ══════════════════════════════════════════════════════════════════════
         # PANEL B — Corpus Replay
@@ -205,12 +218,13 @@ def stage3_view() -> None:
                 "Load a v31 JSONL corpus and replay every record through a fresh inference engine."
             ).classes("text-xs text-slate-500 mb-2")
 
-            with ui.row().classes("gap-3 items-end"):
+            with ui.row().classes("gap-3 items-end w-full"):
                 replay_path_input = ui.input(
                     label="Corpus JSONL path",
-                    value=str(OUTPUT_DIR / "corpus_generated.jsonl"),
+                    value=str(OUTPUT_DIR / "corpus_4563.jsonl"),
                 ).classes("flex-1")
-                replay_btn = ui.button("▶ Replay Corpus").props("dense color=indigo")
+                replay_btn = ui.button("▶ Replay (Instant)").props("dense color=indigo")
+                replay_live_btn = ui.button("▶ Replay (Live)").props("dense color=emerald")
 
             # replay stats
             with ui.row().classes("gap-4 mt-1"):
@@ -277,7 +291,7 @@ def stage3_view() -> None:
                     replay_v_chart.update()
 
                     replay_log.push(
-                        f"✅ {len(results)} records | V_mean={v_mean:.4f} | "
+                        f"[OK] {len(results)} records | V_mean={v_mean:.4f} | "
                         f"gate_OPEN={open_ct} | top_action={top_action}"
                     )
                     for r in results[:5]:
@@ -290,6 +304,99 @@ def stage3_view() -> None:
                 except Exception as ex:
                     replay_log.push(f"✗ Replay error: {ex}")
 
+            async def _replay_corpus_live():
+                global _replay_results
+                path_str = replay_path_input.value.strip()
+                path = Path(path_str)
+                if not path.exists():
+                    # try output dir
+                    alt = OUTPUT_DIR / path.name
+                    if alt.exists():
+                        path = alt
+                    else:
+                        replay_log.push(f"✗ File not found: {path_str}")
+                        return
+
+                replay_log.push(f"▶ [LIVE] Replaying {path.name} Turn-by-Turn...")
+                try:
+                    # Pre-scan count
+                    records = []
+                    with open(path, encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                records.append(json.loads(line))
+                            except Exception:
+                                continue
+
+                    if not records:
+                        replay_log.push("✗ Corpus is empty or invalid.")
+                        return
+
+                    total = len(records)
+                    eng = V31InferenceEngine()  # fresh engine
+                    _replay_results = []
+                    v_vals = []
+
+                    import asyncio
+                    for idx, rec in enumerate(records):
+                        si = rec.get("scalar_inputs", {})
+                        binary_text   = si.get("binary", "")   or str(rec.get("M1", ""))
+                        geometry_text = si.get("geometry", "") or str(rec.get("M2", ""))
+                        language_text = si.get("language", "") or str(rec.get("M3", ""))
+
+                        if len(geometry_text.strip()) < 20:
+                            geometry_text = (
+                                f"Entry {idx+1}/{total}. Env=Sandbox. SystemID=CASEBELIZE. "
+                                f"TelemetryStable=True. {geometry_text}".strip()
+                            )
+                        math_rel = si.get("mathematical_relationship", "")
+                        if len(language_text.strip()) < 20 and math_rel:
+                            language_text = math_rel
+
+                        result = eng.infer(
+                            binary_text=binary_text,
+                            geometry_text=geometry_text,
+                            language_text=language_text,
+                            stimulus=float(rec.get("stimulus", 1.0)),
+                            is_logical=bool(rec.get("is_logical", True)),
+                            telemetry_stable=bool(rec.get("telemetry_stable", True)),
+                            entry_index=idx + 1,
+                            total_entries=total,
+                        )
+                        result["source_record"] = rec
+                        _replay_results.append(result)
+
+                        v_vals.append(result["V"])
+                        v_mean = sum(v_vals) / len(v_vals)
+                        open_ct = sum(1 for r in _replay_results if r["gate_status"] == "OPEN")
+
+                        # Live update labels
+                        replay_count_lbl.set_text(f"records: {idx+1}/{total}")
+                        replay_vmean_lbl.set_text(f"V_mean: {v_mean:.4f}")
+                        replay_gate_lbl.set_text(f"gate OPEN: {open_ct}/{idx+1}")
+                        replay_lto_lbl.set_text(f"action: {result['language_token_output']}")
+
+                        # Live update chart
+                        replay_v_chart.options["xAxis"]["data"] = [str(i+1) for i in range(len(v_vals))]
+                        replay_v_chart.options["series"][0]["data"] = [round(v, 4) for v in v_vals]
+                        replay_v_chart.update()
+
+                        # Live push log
+                        replay_log.push(
+                            f"[{idx+1}/{total}] V={result['V']:.4f} gate={result['gate_status']} "
+                            f"lto={result['language_token_output']}"
+                        )
+
+                        # Smooth animated sleep
+                        await asyncio.sleep(0.04)
+
+                    replay_log.push(f"[OK] Live Replay Completed! {total} records successfully evaluated.")
+                except Exception as ex:
+                    replay_log.push(f"✗ Live Replay error: {ex}")
+
             def _export_replay():
                 if not _replay_results:
                     replay_log.push("No replay results to export.")
@@ -299,12 +406,13 @@ def stage3_view() -> None:
                 # strip source_record to keep it compact
                 slim = [{k: v for k, v in r.items() if k != "source_record"} for r in _replay_results]
                 out.write_text("\n".join(json.dumps(r) for r in slim))
-                replay_log.push(f"✅ Exported {len(slim)} replay records → {out.name}")
+                replay_log.push(f"[OK] Exported {len(slim)} replay records -> {out.name}")
 
             replay_btn.on("click", lambda: _replay_corpus())
-            ui.button("Export Replay Results", on_click=_export_replay).props(
-                "dense outline color=indigo"
-            )
+            replay_live_btn.on("click", lambda: _replay_corpus_live())
+            
+            with ui.row().classes("gap-2 mt-1"):
+                ui.button("Export Replay Results", on_click=_export_replay).props("dense outline color=indigo")
 
         # ══════════════════════════════════════════════════════════════════════
         # PANEL C — Telemetry

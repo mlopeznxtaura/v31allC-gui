@@ -11,4 +11,4 @@ def home():
 
 
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(title="NextAura v31 GUI", reload=False)
+    ui.run(title="NextAura v31 GUI", reload=True)
