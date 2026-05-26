@@ -25,8 +25,9 @@ from stage1.core.triangulation import ACTION_VOCAB
 import json, time, math
 from pathlib import Path
 
-OUTPUT_DIR   = Path("/mnt/d/NextAura/v31all_1/v31allC/output")
-TELEMETRY_DIR = Path("/mnt/d/NextAura/v31all_1/v31allC/telemetry")
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+OUTPUT_DIR   = ROOT_DIR / "output"
+TELEMETRY_DIR = ROOT_DIR / "telemetry"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── module-level state ─────────────────────────────────────────────────────────

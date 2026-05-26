@@ -200,7 +200,8 @@ def export_jsonl():
             return
         
         timestamp = int(__import__('time').time())
-        out_path = Path(f"/mnt/d/NextAura/v31all_1/v31allC/output/stage1_records_export_{timestamp}.jsonl")
+        root_dir = Path(__file__).resolve().parent.parent.parent
+        out_path = root_dir / "output" / f"stage1_records_export_{timestamp}.jsonl"
         out_path.write_text('\n'.join(jsonl_lines))
         
         print(f"✅ Exported {len(jsonl_lines)} records to {out_path}")

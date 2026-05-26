@@ -56,7 +56,7 @@ class SmartRecorder:
         recorder.save_session("my_run")
     """
     
-    output_dir: Path = field(default_factory=lambda: Path("/mnt/d/NextAura/v31all_1/v31allC/output"))
+    output_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent.parent / "output")
     session_name: str = "default_session"
     events: List = field(default_factory=list)
     
