@@ -138,29 +138,75 @@ def _run_batch(parsed, source_name, ingest_log, ingest_stats):
     _recorder.log_event(EventType.USER_INPUT, message=f"Batch: {source_name}",
                         data={"records": len(built), "V_mean": round(v_mean,4)})
 
-def handle_upload(e, ingest_log, ingest_stats):
+def _update_ui_from_last_record(m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, binary_input, geometry_input, language_input, pixel_display, record_log):
+    if not _records:
+        return
+    rec = _records[-1]
+    meta = rec.get("_meta", {})
+    
+    m1_val_label.set_text(f"{meta.get('M1_raw', 0.0):.4f}")
+    m2_val_label.set_text(f"{meta.get('M2_raw', 0.0):.4f}")
+    m3_val_label.set_text(f"{meta.get('M3_raw', 0.0):.4f}")
+    
+    m1_branch_label.set_text(f"Branches: {_m1.branch_count}")
+    m2_budget_label.set_text(f"Budget: {_m2.cost_budget:.3f}")
+    m3_mult_label.set_text(f"Multiplier: {_m3.logic_multiplier:.2f}")
+    
+    v = meta.get("V", 0.0)
+    v_label.set_text(f"{v:.4f}")
+    
+    _v_history.append(v)
+    if len(_v_history) > 5:
+        _v_history.pop(0)
+    avg_momentum = sum(_v_history) / len(_v_history) if _v_history else 0.0
+    momentum_label.set_text(f"{avg_momentum:.4f}")
+    
+    nfp = rec.get("output_tokens", {}).get("next_frame_prediction", "—")
+    lto = rec.get("output_tokens", {}).get("language_token_output", "—")
+    
+    nfp_label.set_text(str(nfp)[:100])
+    lto_label.set_text(str(lto)[:120])
+    
+    binary_input.set_value(str(rec.get("scalar_inputs", {}).get("binary", "")))
+    geometry_input.set_value(str(rec.get("scalar_inputs", {}).get("geometry", "")))
+    language_input.set_value(str(rec.get("scalar_inputs", {}).get("language", "")))
+    
+    if "pixel_frame_base64" in meta:
+        try:
+            frame_bytes = base64.b64decode(meta["pixel_frame_base64"])
+            frame_shape = meta["pixel_frame_shape"]
+            frame_array = np.frombuffer(frame_bytes, dtype=np.uint8).reshape(frame_shape)
+            img_base64 = render_pixel_frame(frame_array)
+            if img_base64:
+                pixel_display.set_source(f"data:image/png;base64,{img_base64}")
+        except Exception as e:
+            record_log.push(f"Pixel error: {e}")
+
+def handle_upload(e, ingest_log, ingest_stats, m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, binary_input, geometry_input, language_input, pixel_display, record_log):
     try:
         content = e.content.read().decode(errors="replace")
         fmt = Stage1Ingest.detect_format(content)
         parsed = Stage1Ingest.parse_format(content, fmt)
         ingest_log.push(f"Parsed {len(parsed)} records ({fmt}) - GPU batch build...")
         _run_batch(parsed, e.name, ingest_log, ingest_stats)
+        _update_ui_from_last_record(m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, binary_input, geometry_input, language_input, pixel_display, record_log)
     except Exception as ex:
         ingest_log.push(f"Error: {str(ex)}")
         _recorder.log_error(f"Upload failed for {e.name}", ex)
 
-def handle_paste(content, ingest_log, ingest_stats):
+def handle_paste(content, ingest_log, ingest_stats, m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, binary_input, geometry_input, language_input, pixel_display, record_log):
     try:
         fmt = Stage1Ingest.detect_format(content)
         parsed = Stage1Ingest.parse_format(content, fmt)
         ingest_log.push(f"Parsed {len(parsed)} records ({fmt}) - GPU batch build...")
         _run_batch(parsed, "paste", ingest_log, ingest_stats)
         _auto_compute_after_ingest()
+        _update_ui_from_last_record(m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, binary_input, geometry_input, language_input, pixel_display, record_log)
     except Exception as ex:
         ingest_log.push(f"Error: {str(ex)}")
         _recorder.log_error("Paste failed", ex)
 
-def one_shot_auto_ingest(ingest_log, ingest_stats):
+def one_shot_auto_ingest(ingest_log, ingest_stats, m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, binary_input, geometry_input, language_input, pixel_display, record_log):
     try:
         pt_corpus_dir = Path("D:/NextAura/v31all_1/Pt's/Corpus")
         if not pt_corpus_dir.exists():
@@ -190,7 +236,8 @@ def one_shot_auto_ingest(ingest_log, ingest_stats):
         ingest_log.push(f"Total parsed: {len(all_parsed)} records. Running GPU batch build...")
         _run_batch(all_parsed, "one_shot_auto_ingest", ingest_log, ingest_stats)
         _auto_compute_after_ingest()
-        ingest_log.push("✅ 1-Shot Ingestion Complete!")
+        _update_ui_from_last_record(m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, binary_input, geometry_input, language_input, pixel_display, record_log)
+        ingest_log.push("✅ 1-Shot Ingestion and UI pipeline update complete!")
     except Exception as ex:
         ingest_log.push(f"Error: {str(ex)}")
 
@@ -297,13 +344,34 @@ def stage1_view() -> None:
             ui.label("🔄 Ingest Raw Data").classes("text-lg font-bold text-cyan-700")
             ui.label("Drop files here or paste JSON/CSV/text weights").classes("text-xs text-slate-600")
             with ui.row().classes("w-full gap-2"):
-                upload_area = ui.upload(on_upload=lambda e: handle_upload(e, ingest_log, ingest_stats)).classes("flex-1")
+                upload_area = ui.upload(on_upload=lambda e: handle_upload(
+                    e, ingest_log, ingest_stats,
+                    m1_val_label, m2_val_label, m3_val_label,
+                    m1_branch_label, m2_budget_label, m3_mult_label,
+                    v_label, momentum_label, nfp_label, lto_label,
+                    binary_input, geometry_input, language_input,
+                    pixel_display, record_log
+                )).classes("flex-1")
                 upload_area.props("accept=.json,.csv,.txt,.jsonl max-file-size=52428800")
             with ui.row().classes("gap-2 w-full items-center"):
                 paste_input = ui.textarea(label="Or paste JSON/CSV/weights", placeholder="Paste content here...").classes("flex-1 h-24")
                 with ui.column().classes("gap-2"):
-                    ui.button("Ingest Pasted", on_click=lambda: handle_paste(paste_input.value, ingest_log, ingest_stats)).props("dense color=cyan")
-                    ui.button("⚡ 1-SHOT AUTO-INGEST", on_click=lambda: one_shot_auto_ingest(ingest_log, ingest_stats)).props("dense color=teal").classes("font-bold")
+                    ui.button("Ingest Pasted", on_click=lambda: handle_paste(
+                        paste_input.value, ingest_log, ingest_stats,
+                        m1_val_label, m2_val_label, m3_val_label,
+                        m1_branch_label, m2_budget_label, m3_mult_label,
+                        v_label, momentum_label, nfp_label, lto_label,
+                        binary_input, geometry_input, language_input,
+                        pixel_display, record_log
+                    )).props("dense color=cyan")
+                    ui.button("⚡ 1-SHOT AUTO-INGEST", on_click=lambda: one_shot_auto_ingest(
+                        ingest_log, ingest_stats,
+                        m1_val_label, m2_val_label, m3_val_label,
+                        m1_branch_label, m2_budget_label, m3_mult_label,
+                        v_label, momentum_label, nfp_label, lto_label,
+                        binary_input, geometry_input, language_input,
+                        pixel_display, record_log
+                    )).props("dense color=teal").classes("font-bold")
             ingest_log = ui.log(max_lines=8).classes("w-full text-xs font-mono h-24 bg-slate-900 text-cyan-300")
             ingest_stats = ui.label("Ready").classes("text-xs text-slate-500 mt-2")
         

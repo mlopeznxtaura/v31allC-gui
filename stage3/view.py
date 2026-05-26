@@ -133,26 +133,49 @@ def stage3_view() -> None:
                 "7-input stateful inference. M1/M2/M3 + Triangulation state persist across turns."
             ).classes("text-xs text-slate-500 mb-2")
 
-            # inputs
-            with ui.column().classes("w-full gap-2"):
-                infer_binary   = ui.textarea(
-                    label="Binary text",
-                    value="Phase gate logical: hash=v31all, mission=NextAura ATP inference, score=0.891"
-                ).classes("w-full h-16")
-                infer_geometry = ui.textarea(
-                    label="Geometry text",
-                    value="Entry 1. Env=Sandbox. SystemID=CASEBELIZE. TelemetryStable=True."
-                ).classes("w-full h-16")
-                infer_language = ui.textarea(
-                    label="Language text",
-                    value="Running v31 inference. 7-input schema active. Triangulation receiving all scalars."
-                ).classes("w-full h-16")
+            chat_messages: list[dict] = []
+            chat_container_element = [None] # list container for closure mutable assignment
 
-            with ui.row().classes("gap-3 items-end mt-1"):
-                infer_stim   = ui.number(label="Stimulus", value=1.0, min=0.1, max=10.0, step=0.1).classes("w-24")
-                infer_btn    = ui.button("▶ Infer").props("dense color=rose")
-                oneshot_infer_btn = ui.button("⚡ 1-SHOT AUTO-INFER").props("dense color=pink icon=bolt").classes("font-bold")
-                reset_btn    = ui.button("↺ Reset Engine").props("dense outline color=rose")
+            # Tab layout for classic vs chat mode
+            with ui.tabs().classes("w-full border-b border-rose-100 mb-2") as tabs:
+                classic_tab = ui.tab("Structured Parameters ⚙")
+                chat_tab = ui.tab("Interactive Chat Arena 💬")
+
+            with ui.tab_panels(tabs, value=classic_tab).classes("w-full bg-transparent p-0"):
+                with ui.tab_panel(classic_tab).classes("p-0 w-full gap-2"):
+                    # inputs
+                    with ui.column().classes("w-full gap-2"):
+                        infer_binary   = ui.textarea(
+                            label="Binary text",
+                            value="Phase gate logical: hash=v31all, mission=NextAura ATP inference, score=0.891"
+                        ).classes("w-full h-16")
+                        infer_geometry = ui.textarea(
+                            label="Geometry text",
+                            value="Entry 1. Env=Sandbox. SystemID=CASEBELIZE. TelemetryStable=True."
+                        ).classes("w-full h-16")
+                        infer_language = ui.textarea(
+                            label="Language text",
+                            value="Running v31 inference. 7-input schema active. Triangulation receiving all scalars."
+                        ).classes("w-full h-16")
+
+                    with ui.row().classes("gap-3 items-end mt-1"):
+                        infer_stim   = ui.number(label="Stimulus", value=1.0, min=0.1, max=10.0, step=0.1).classes("w-24")
+                        infer_btn    = ui.button("▶ Infer").props("dense color=rose")
+                        oneshot_infer_btn = ui.button("⚡ 1-SHOT AUTO-INFER").props("dense color=pink icon=bolt").classes("font-bold")
+                        reset_btn    = ui.button("↺ Reset Engine").props("dense outline color=rose")
+
+                with ui.tab_panel(chat_tab).classes("p-0 w-full gap-2"):
+                    ui.label("Talk to the model directly. Your message overrides the Language Text parameter while inheriting current Binary and Geometry contexts.").classes("text-[11px] text-slate-500 mb-1")
+                    
+                    # Scrollable chat logs area
+                    chat_scroll = ui.scroll_area().classes("w-full h-80 bg-slate-950 rounded-lg p-2 border border-slate-800")
+                    with chat_scroll:
+                        chat_container = ui.column().classes("w-full gap-2")
+                        chat_container_element[0] = chat_container
+                    
+                    with ui.row().classes("w-full items-center gap-2 mt-2"):
+                        chat_input = ui.input(placeholder="Type a message or question for the model (e.g. 'Are we stable?', 'What is our V(s) score?')...").classes("flex-1")
+                        send_btn = ui.button(icon="send").props("color=rose flat")
 
             # output fields — 9 fields
             ui.label("Output:").classes("text-xs font-semibold text-slate-600 mt-1")
@@ -199,6 +222,136 @@ def stage3_view() -> None:
             infer_log = ui.log(max_lines=12).classes(
                 "w-full text-xs font-mono h-24 bg-slate-900 text-rose-300 mt-1"
             )
+
+            def _update_chat_ui():
+                container = chat_container_element[0]
+                if not container:
+                    return
+                container.clear()
+                with container:
+                    if not chat_messages:
+                        ui.label("No conversation history yet. Ask the model anything!").classes(
+                            "text-xs text-slate-500 italic text-center w-full my-4"
+                        )
+                        return
+                        
+                    for msg in chat_messages:
+                        if msg["sender"] == "user":
+                            # User bubble
+                            with ui.row().classes("w-full justify-end gap-2 my-1"):
+                                with ui.card().classes("bg-gradient-to-r from-rose-700 to-pink-600 text-white p-2.5 rounded-2xl rounded-tr-none max-w-[80%] shadow-md border-0"):
+                                    ui.label(msg["text"]).classes("text-xs font-semibold leading-relaxed break-words")
+                                    ui.label("User").classes("text-[9px] text-pink-200 mt-0.5 text-right block")
+                        else:
+                            # Model bubble
+                            with ui.row().classes("w-full justify-start gap-2 my-1"):
+                                bg_class = "bg-slate-900 border border-rose-900 text-rose-100" if "is_error" not in msg else "bg-red-950 border border-red-800 text-red-200"
+                                with ui.card().classes(f"{bg_class} p-2.5 rounded-2xl rounded-tl-none max-w-[85%] shadow-md"):
+                                    if "mode" in msg:
+                                        with ui.row().classes("items-center justify-between w-full mb-1 border-b border-slate-800 pb-1 gap-4"):
+                                            ui.label(msg["mode"]).classes("text-[9px] uppercase font-bold text-rose-400 tracking-wider")
+                                            ui.label(f"Turn {msg['turn']}").classes("text-[9px] text-slate-500 font-mono")
+                                    
+                                    ui.label(msg["text"]).classes("text-xs font-semibold leading-relaxed break-words text-rose-50")
+                                    
+                                    if "v" in msg:
+                                        with ui.expansion("Thought Trace & Frame").classes("w-full text-[11px] text-slate-400 mt-1.5 bg-slate-950 rounded p-1"):
+                                            with ui.row().classes("w-full gap-2 justify-between mb-1 pb-1 border-b border-slate-900"):
+                                                with ui.column().classes("gap-0.5"):
+                                                    ui.label(f"V(s): {msg['v']:.4f}").classes("font-mono text-emerald-400 font-bold")
+                                                    ui.label(f"Gate: {msg['gate_status']}").classes(f"font-mono font-bold {'text-emerald-500' if msg['gate_status'] == 'OPEN' else 'text-amber-500'}")
+                                                with ui.column().classes("gap-0.5 items-end"):
+                                                    ui.label(f"M1={msg['m1']:.2f} M2={msg['m2']:.2f}").classes("font-mono text-slate-500")
+                                                    ui.label(f"M3={msg['m3']:.2f}").classes("font-mono text-slate-500")
+                                            
+                                            ui.label("Next Frame Prediction:").classes("text-[9px] text-slate-500 uppercase font-bold tracking-wider")
+                                            ui.label(msg["nfp"]).classes("text-[10px] font-mono text-slate-300 bg-slate-900 p-1 rounded mb-1.5 leading-tight")
+                                            
+                                            ui.label("Synthesized Frame:").classes("text-[9px] text-slate-500 uppercase font-bold tracking-wider mb-1")
+                                            # Inline mini canvas grid
+                                            ui.html(generate_svg_grid(msg["pixels"], is_neural="Neural" in msg["mode"])).classes("w-24 h-20 mx-auto mb-1")
+                                            
+                                    ui.label("Model").classes("text-[9px] text-rose-500 mt-0.5 text-left block font-bold")
+                
+                # Auto-scroll container
+                ui.run_javascript(f"var el = document.getElementById('{container.id}'); if(el) {{ el.scrollTop = el.scrollHeight; }}")
+
+            async def _send_chat_message(user_msg_input):
+                msg_text = user_msg_input.value.strip()
+                if not msg_text:
+                    return
+                user_msg_input.set_value("")
+                
+                chat_messages.append({"sender": "user", "text": msg_text, "timestamp": time.time()})
+                _update_chat_ui()
+                
+                is_n = bool(engine_mode_toggle.value)
+                eng = _get_active_engine(is_n)
+                try:
+                    result = eng.infer(
+                        binary_text=infer_binary.value,
+                        geometry_text=infer_geometry.value,
+                        language_text=msg_text,
+                        stimulus=float(infer_stim.value),
+                    )
+                    _infer_history.append(result)
+                    
+                    # Update Panel A's numeric output labels
+                    for key, lbl in out_fields.items():
+                        val = result.get(key, "—")
+                        lbl.set_text(str(val))
+                        if key == "gate_status":
+                            lbl.classes(remove="text-emerald-600 text-amber-600")
+                            lbl.classes(add=_gate_color(str(val)))
+                    
+                    nfp_lbl.set_text(result.get("next_frame_prediction", "—"))
+                    lto_lbl.set_text(result.get("language_token_output", "—"))
+                    
+                    # Update Panel A visual grid
+                    if is_n and "neural_frame" in result:
+                        grid_pixels = result["neural_frame"]
+                    else:
+                        grid_pixels = generate_classical_pattern(result["V"])
+                    visual_grid_html.set_content(generate_svg_grid(grid_pixels, is_neural=is_n))
+                    
+                    # Update Panel A charts
+                    v_vals = [r["V"] for r in _infer_history[-30:]]
+                    v_chart.options["xAxis"]["data"] = [str(i+1) for i in range(len(v_vals))]
+                    v_chart.options["series"][0]["data"] = v_vals
+                    v_chart.update()
+                    
+                    # Log activity
+                    gate = result["gate_status"]
+                    mode_lbl = "NEURAL" if is_n else "CLASSICAL"
+                    infer_log.push(f"[{mode_lbl} | turn {result['turn']}] V={result['V']:.4f} gate={gate} lto={result['language_token_output']}")
+                    
+                    # Add Model response bubble
+                    chat_messages.append({
+                        "sender": "model",
+                        "mode": "Neural 🟣" if is_n else "Analytical ⚪",
+                        "text": result.get("language_token_output", "—"),
+                        "nfp": result.get("next_frame_prediction", "—"),
+                        "v": result.get("V", 0.0),
+                        "gate_status": gate,
+                        "m1": result.get("M1", 0.0),
+                        "m2": result.get("M2", 0.0),
+                        "m3": result.get("M3", 0.0),
+                        "binary_scalar": result.get("binary_scalar", 0.0),
+                        "geometry_scalar": result.get("geometry_scalar", 0.0),
+                        "language_scalar": result.get("language_scalar", 0.0),
+                        "turn": result.get("turn", 0),
+                        "pixels": grid_pixels,
+                        "timestamp": time.time()
+                    })
+                    _update_chat_ui()
+                except Exception as ex:
+                    chat_messages.append({"sender": "model", "text": f"Error running inference: {ex}", "is_error": True})
+                    _update_chat_ui()
+
+            # Wire up chat triggers
+            chat_input.on("keydown.enter", lambda: _send_chat_message(chat_input))
+            send_btn.on("click", lambda: _send_chat_message(chat_input))
+            _update_chat_ui()
 
             def _run_infer():
                 is_n = bool(engine_mode_toggle.value)
@@ -255,6 +408,8 @@ def stage3_view() -> None:
             def _reset():
                 _reset_engines()
                 _infer_history.clear()
+                chat_messages.clear()
+                _update_chat_ui()
                 for lbl in out_fields.values():
                     lbl.set_text("—")
                 nfp_lbl.set_text("—")
@@ -277,12 +432,28 @@ def stage3_view() -> None:
             def _export_model_state():
                 try:
                     from stage3.inference_engine.exporter import export_model
-                    eng = _get_engine()
+                    is_n = bool(engine_mode_toggle.value)
+                    eng = _get_active_engine(is_n)
+                    # Exporter takes Analytical V31InferenceEngine (or subclass)
                     paths = export_model(eng, OUTPUT_DIR)
                     infer_log.push(f"[OK] Exported GGUF Model Weights: {paths['gguf'].name} ({paths['gguf'].stat().st_size} bytes)")
                     infer_log.push(f"[OK] Exported JSON Model Parameters: {paths['json'].name} ({paths['json'].stat().st_size} bytes)")
                 except Exception as ex:
-                    infer_log.push(f"✗ Export Model Error: {ex}")
+                    infer_log.push(f"✗ Export GGUF Error: {ex}")
+
+            def _export_pytorch_model():
+                try:
+                    import shutil
+                    src = ROOT_DIR / "models" / "v31_neural_model.pt"
+                    if not src.exists():
+                        infer_log.push("✗ Export PyTorch Error: PyTorch model file 'models/v31_neural_model.pt' not found. Please train the model in Stage 2 first.")
+                        return
+                    ts = int(time.time())
+                    dst = OUTPUT_DIR / f"model_export_v31_{ts}.pt"
+                    shutil.copy(src, dst)
+                    infer_log.push(f"[OK] Exported PyTorch Model Weights: {dst.name} ({dst.stat().st_size} bytes)")
+                except Exception as ex:
+                    infer_log.push(f"✗ Export PyTorch Error: {ex}")
 
             def _one_shot_infer():
                 engine_mode_toggle.set_value(True)
@@ -296,6 +467,7 @@ def stage3_view() -> None:
             with ui.row().classes("gap-2 mt-1"):
                 ui.button("Export Inference Log", on_click=_export_infer).props("dense outline color=rose")
                 ui.button("Export Model (.gguf)", on_click=_export_model_state).props("dense outline color=rose")
+                ui.button("Export Model (.pt)", on_click=_export_pytorch_model).props("dense outline color=rose")
 
         # ══════════════════════════════════════════════════════════════════════
         # PANEL B — Corpus Replay
