@@ -23,7 +23,7 @@ from stage3.inference_engine.main import V31InferenceEngine
 from stage3.inference_engine.neural_inference import V31NeuralInferenceEngine
 from stage2.dag_compiler.phase_gate import CONVERGENCE_ACTIONS
 from stage1.core.triangulation import ACTION_VOCAB
-import json, time, math
+import json, time, math, asyncio
 import numpy as np
 from pathlib import Path
 
@@ -698,3 +698,104 @@ def stage3_view() -> None:
 
             # auto-load on init
             _load_telemetry()
+
+        # ══════════════════════════════════════════════════════════════════════
+        # PANEL D — Screen Recorder
+        # ══════════════════════════════════════════════════════════════════════
+        with ui.card().classes("w-full border border-teal-300 p-3 mt-1"):
+            with ui.row().classes("gap-3 items-center w-full justify-between mb-1"):
+                ui.label("🎥 Live Screen Recorder").classes("font-semibold text-teal-700 text-sm")
+            
+            ui.label(
+                "Record the host Windows desktop asynchronously using native FFmpeg."
+            ).classes("text-xs text-slate-500 mb-2")
+
+            with ui.row().classes("gap-3 items-end w-full"):
+                rec_duration = ui.number(label="Duration (sec)", value=3.0, min=1.0, max=60.0, step=1.0).classes("w-24")
+                rec_fps      = ui.number(label="Framerate (fps)", value=10.0, min=5.0, max=30.0, step=5.0).classes("w-24")
+                rec_btn      = ui.button("▶ Start Recording").props("dense color=teal")
+
+            # status & video preview
+            rec_status = ui.label("Ready to capture").classes("text-xs font-mono text-teal-600 mt-1")
+            
+            video_container = ui.column().classes("w-full mt-2 hidden")
+            with video_container:
+                ui.label("Latest Recording Preview:").classes("text-xs text-slate-500 font-mono")
+                video_player = ui.video("").classes("w-full h-48 bg-black rounded")
+                download_link = ui.link("📥 Download recorded video (.mp4)", "#").classes("text-xs text-teal-600 font-bold")
+
+            async def _start_recording():
+                duration = float(rec_duration.value)
+                fps = int(rec_fps.value)
+                ts = int(time.time())
+                output_filename = f"screen_rec_{ts}.mp4"
+                
+                # In WSL, the static path of the python app is:
+                static_path = Path(__file__).resolve().parent.parent / "static"
+                recordings_path = static_path / "recordings"
+                recordings_path.mkdir(parents=True, exist_ok=True)
+                
+                output_file_wsl = recordings_path / output_filename
+                
+                # Convert the path to Windows format for ffmpeg.exe:
+                abs_wsl_path = str(output_file_wsl.resolve())
+                if abs_wsl_path.startswith("/mnt/"):
+                    drive = abs_wsl_path[5].upper() # e.g. 'd' -> 'D'
+                    win_path = f"{drive}:" + abs_wsl_path[6:]
+                else:
+                    win_path = abs_wsl_path.replace("\\", "/")
+                
+                rec_btn.disable()
+                rec_status.set_text("🔴 INITIALIZING RECORDER...")
+                rec_status.classes(remove="text-teal-600 text-rose-600")
+                rec_status.classes(add="text-rose-600 font-bold")
+                
+                cmd = [
+                    "ffmpeg.exe",
+                    "-f", "gdigrab",
+                    "-framerate", str(fps),
+                    "-i", "desktop",
+                    "-t", str(duration),
+                    "-y", win_path
+                ]
+                
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    
+                    # Live countdown in GUI
+                    for sec in range(int(duration), 0, -1):
+                        rec_status.set_text(f"🔴 RECORDING DESKTOP... {sec}s remaining")
+                        await asyncio.sleep(1.0)
+                        
+                    stdout, stderr = await proc.communicate()
+                    
+                    if proc.returncode == 0 and output_file_wsl.exists():
+                        rec_status.set_text(f"✓ Video recorded successfully! ({output_filename})")
+                        rec_status.classes(remove="text-rose-600")
+                        rec_status.classes(add="text-emerald-600 font-bold")
+                        
+                        video_container.classes(remove="hidden")
+                        video_url = f"/static/recordings/{output_filename}"
+                        video_player.set_source(video_url)
+                        download_link.props(f'href="{video_url}" target="_blank"')
+                        ui.notify("Screen recording completed!", type="positive")
+                    else:
+                        err_msg = stderr.decode(errors="ignore").strip().split("\n")[-1]
+                        rec_status.set_text(f"✗ Recording failed: {err_msg}")
+                        rec_status.classes(remove="text-rose-600 text-emerald-600")
+                        rec_status.classes(add="text-rose-600 font-bold")
+                        ui.notify(f"Screen recording failed: {err_msg}", type="negative")
+                        
+                except Exception as ex:
+                    rec_status.set_text(f"✗ Recording exception: {ex}")
+                    rec_status.classes(remove="text-rose-600 text-emerald-600")
+                    rec_status.classes(add="text-rose-600 font-bold")
+                    ui.notify(f"Screen recording error: {ex}", type="negative")
+                finally:
+                    rec_btn.enable()
+
+            rec_btn.on("click", lambda: _start_recording())
