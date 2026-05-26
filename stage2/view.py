@@ -469,6 +469,39 @@ def stage2_view() -> None:
                 train_log.push(f"▶ Loading corpus from {corpus_path}...")
                 train_log.push(f"  Epochs: {epochs} | Batch Size: {batch_size} | Learning Rate: {lr}")
                 
+                # Compute training state signature to check cache (AuraCycleManager)
+                from stage2.training_engine.state_registry import AuraCycleManager
+                train_log.push("🔍 Fingerprinting corpus dataset and computing state signature...")
+                try:
+                    corpus_hash = AuraCycleManager.calculate_corpus_hash(str(full_path))
+                    state_hash = AuraCycleManager.compute_state_hash(corpus_hash, epochs, batch_size, lr)
+                    train_log.push(f"  └─ Corpus Fingerprint: {corpus_hash[:16]}...")
+                    train_log.push(f"  └─ State Hash: {state_hash[:16]}...")
+                    
+                    cached_entry = AuraCycleManager.check_state(state_hash)
+                    if cached_entry:
+                        train_log.push("────────────────────────────────────────────────────────────────")
+                        train_log.push("⚡ [CACHE HIT] This state has already been trained and validated!")
+                        metrics = cached_entry.get("metrics", {})
+                        train_log.push(f"  └─ Previous Metrics: Total Loss={metrics.get('total_loss', 0.0):.5f} | MSE={metrics.get('mse_loss', 0.0):.5f}")
+                        train_log.push("🔄 Skipping training. Restoring weight checkpoint from cache...")
+                        
+                        import shutil
+                        shutil_src = ROOT_DIR / cached_entry["checkpoint_path"]
+                        shutil_dst = ROOT_DIR / "models" / "v31_neural_model.pt"
+                        shutil.copy(shutil_src, shutil_dst)
+                        
+                        train_log.push("✅ Weight checkpoint restored. Ready for inference!")
+                        ui.notify("Training skipped: State retrieved from cache!", type="info")
+                        train_btn.enable()
+                        train_btn.set_text("Start Training")
+                        
+                        if hasattr(stage2_view, "refresh_states"):
+                            stage2_view.refresh_states()
+                        return
+                except Exception as ex_cache:
+                    train_log.push(f"⚠️ Cache check warning: {ex_cache}. Proceeding with fresh training.")
+                
                 try:
                     model = V31Model(vocab_size=5000, num_experts=4)
                     trainer = AsymmetricTrainer(model, lr=lr)
@@ -560,6 +593,30 @@ def stage2_view() -> None:
                     ckpt_path = models_dir / "v31_neural_model.pt"
                     trainer.save_checkpoint(str(ckpt_path))
                     
+                    # Register this completed state in the cache db
+                    try:
+                        metrics = {
+                            "total_loss": avg_loss,
+                            "mse_loss": avg_mse,
+                            "ce_loss": avg_ce
+                        }
+                        relative_cached_path = AuraCycleManager.register_state(
+                            state_hash=state_hash,
+                            corpus_path=corpus_path,
+                            corpus_hash=corpus_hash,
+                            epochs=epochs,
+                            batch_size=batch_size,
+                            lr=lr,
+                            metrics=metrics,
+                            source_checkpoint_path="models/v31_neural_model.pt"
+                        )
+                        train_log.push(f"💾 Completed state registered in cache!")
+                        train_log.push(f"  └─ Cached Weights: {relative_cached_path}")
+                        if hasattr(stage2_view, "refresh_states"):
+                            stage2_view.refresh_states()
+                    except Exception as ex_reg:
+                        train_log.push(f"⚠️ Registration warning: {ex_reg}")
+
                     train_log.push("────────────────────────────────────────────────────────────────")
                     train_log.push(f"✅ Training COMPLETED successfully!")
                     train_log.push(f"💾 Checkpoint saved → models/v31_neural_model.pt")
@@ -581,3 +638,28 @@ def stage2_view() -> None:
 
             oneshot_train_btn.on("click", _one_shot_train)
             train_btn.on("click", _run_training)
+            
+            # --- State Cache Registry List ---
+            with ui.expansion("💾 Checked-In Training States Cache (AuraCycleManager)", icon="database").classes("w-full border border-purple-200 rounded mt-2 bg-slate-950"):
+                with ui.row().classes("w-full justify-between items-center px-2 py-1"):
+                    ui.label("Registered State Hashes & Models").classes("text-[11px] font-semibold text-purple-300 font-mono")
+                    ui.button("Refresh States", on_click=lambda: _load_states()).props("dense color=purple text-xs outline")
+                states_log = ui.log(max_lines=15).classes("w-full text-xs font-mono h-24 bg-slate-950 text-purple-200 p-1")
+                
+                def _load_states():
+                    states_log.clear()
+                    from stage2.training_engine.state_registry import AuraCycleManager
+                    states = AuraCycleManager.get_registered_states()
+                    if not states:
+                        states_log.push("No cached state configurations found in registry.")
+                        return
+                    for shash, s in states.items():
+                        states_log.push(f"[{s['timestamp']}] State: {shash[:16]}... | Corpus: {s['corpus_hash'][:12]}...")
+                        states_log.push(f"  └─ Params: epochs={s['epochs']} batch={s['batch_size']} lr={s['lr']:.5f}")
+                        states_log.push(f"  └─ Loss={s['metrics'].get('total_loss',0.0):.5f} MSE={s['metrics'].get('mse_loss',0.0):.5f} CE={s['metrics'].get('ce_loss',0.0):.5f}")
+                        states_log.push(f"  └─ File: {s['checkpoint_path']}")
+                
+                # Expose refresh hook
+                stage2_view.refresh_states = _load_states
+                # Run once on startup
+                ui.timer(0.5, _load_states, once=True)

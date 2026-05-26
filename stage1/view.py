@@ -11,6 +11,10 @@ from pathlib import Path
 from PIL import Image
 from io import BytesIO
 
+from stage1.core.neural_l1_engine import NeuralL1State
+from gui.stage3.view import scan_checkpoints
+
+_neural_l1 = NeuralL1State()
 _rb = RecordBuilder(total_entries=50, codebase_hash="v31all", mission="gui_run")
 _recorder = SmartRecorder(session_name="stage1_gui_session")
 _m1 = M1State()
@@ -33,7 +37,25 @@ def render_pixel_frame(frame_array):
         return None
 
 def compute_and_display(stimulus, m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, record_log, binary_input, geometry_input, language_input, pixel_display):
-    vals = compute_m_scalars(_m1, _m2, _m3, stimulus=stimulus)
+    if _rb.neural_l1 is not None and _rb.neural_l1.is_loaded:
+        progress = _rb._entry / max(_rb.total_entries, 1)
+        prev_lang = 0.5
+        prev_bin = 0.5
+        if _records:
+            prev_meta = _records[-1].get("_meta", {})
+            prev_lang = prev_meta.get("language_scalar", 0.5)
+            prev_bin = prev_meta.get("binary_scalar", 0.5)
+            
+        m1_val, m2_val, m3_val = _neural_l1.step(
+            progress=progress,
+            language_scalar=prev_lang,
+            binary_scalar=prev_bin,
+            stimulus=stimulus
+        )
+        _ = compute_m_scalars(_m1, _m2, _m3, stimulus=stimulus)
+        vals = {"M1": m1_val, "M2": m2_val, "M3": m3_val}
+    else:
+        vals = compute_m_scalars(_m1, _m2, _m3, stimulus=stimulus)
     
     m1_val_label.set_text(f"{vals['M1']:.4f}")
     m2_val_label.set_text(f"{vals['M2']:.4f}")
@@ -53,6 +75,7 @@ def compute_and_display(stimulus, m1_val_label, m2_val_label, m3_val_label, m1_b
         binary_text=binary_input.value,
         geometry_text=geometry_input.value,
         language_text=language_input.value,
+        stimulus=stimulus,
     )
     
     # Accumulate records for export
@@ -129,14 +152,26 @@ def _run_batch(parsed, source_name, ingest_log, ingest_stats):
         ingest_log.push("No usable records found.")
         return
     built = _rb.build_batch(rows)
-    _records.extend(built)
-    vs = [r["_meta"]["V"] for r in built]
+    
+    # Run through SOC compliance and deduplication engine
+    from stage1.core.soc_compliance import IngestionComplianceEngine
+    clean_built, metrics = IngestionComplianceEngine.process_records(built, source_name)
+    
+    _records.extend(clean_built)
+    vs = [r["_meta"]["V"] for r in clean_built]
     v_mean = sum(vs)/len(vs) if vs else 0
     v_max  = max(vs) if vs else 0
-    ingest_log.push(f"Built {len(built)} records | V_mean={v_mean:.4f} V_max={v_max:.4f}")
+    
+    ingest_log.push(f"Cleaned {len(clean_built)} unique records (skipped {metrics['duplicates_skipped']} duplicates).")
+    ingest_log.push(f"Corpus Signature: {metrics['corpus_sha256_signature'][:16]}...")
     ingest_stats.set_text(f"{len(_records)} total | last batch V_mean={v_mean:.4f} V_max={v_max:.4f}")
+    
     _recorder.log_event(EventType.USER_INPUT, message=f"Batch: {source_name}",
-                        data={"records": len(built), "V_mean": round(v_mean,4)})
+                        data={"records": len(clean_built), "skipped_duplicates": metrics["duplicates_skipped"], "V_mean": round(v_mean,4)})
+    
+    # If the audit panel is available, refresh it
+    if hasattr(stage1_view, "refresh_audit"):
+        stage1_view.refresh_audit()
 
 def _update_ui_from_last_record(m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, binary_input, geometry_input, language_input, pixel_display, record_log):
     if not _records:
@@ -314,18 +349,56 @@ def save_session_log():
     _recorder.summary()
 
 
+def update_engine_mode(mode_val, checkpoint_val, record_log):
+    if mode_val == "Neural":
+        if checkpoint_val == "simulated":
+            _rb.neural_l1 = None
+            _neural_l1.is_loaded = False
+            record_log.push("[Engine] L1 mode set to Neural, but checkpoint is 'simulated' (using fallback).")
+        else:
+            success = _neural_l1.load_weights(checkpoint_val)
+            if success:
+                _rb.neural_l1 = _neural_l1
+                record_log.push(f"[Engine] Loaded Layer-1 neural weights: {Path(checkpoint_val).name}")
+            else:
+                _rb.neural_l1 = None
+                record_log.push(f"[Engine] Warning: Failed to load L1 neural weights from {checkpoint_val}. Falling back.")
+    else:
+        _rb.neural_l1 = None
+        record_log.push("[Engine] Mode set to Analytical (Rule-Based).")
+
+
 def _auto_compute_after_ingest():
     """Auto-trigger computation after data ingest"""
     global _m1, _m2, _m3, _tri
     try:
         stimulus = 1.0
-        vals = compute_m_scalars(_m1, _m2, _m3, stimulus=stimulus)
+        if _rb.neural_l1 is not None and _rb.neural_l1.is_loaded:
+            progress = _rb._entry / max(_rb.total_entries, 1)
+            prev_lang = 0.5
+            prev_bin = 0.5
+            if _records:
+                prev_meta = _records[-1].get("_meta", {})
+                prev_lang = prev_meta.get("language_scalar", 0.5)
+                prev_bin = prev_meta.get("binary_scalar", 0.5)
+                
+            m1_val, m2_val, m3_val = _neural_l1.step(
+                progress=progress,
+                language_scalar=prev_lang,
+                binary_scalar=prev_bin,
+                stimulus=stimulus
+            )
+            _ = compute_m_scalars(_m1, _m2, _m3, stimulus=stimulus)
+            vals = {"M1": m1_val, "M2": m2_val, "M3": m3_val}
+        else:
+            vals = compute_m_scalars(_m1, _m2, _m3, stimulus=stimulus)
         
         # Build record
         rec = _rb.build(
             binary_text=f"stimulus={stimulus:.2f} auto-computed",
             geometry_text=f"M1={vals['M1']:.4f} M2={vals['M2']:.4f} M3={vals['M3']:.4f}",
             language_text=f"auto-ingested and computed",
+            stimulus=stimulus,
         )
         
         _recorder.log_event(
@@ -372,14 +445,62 @@ def stage1_view() -> None:
                         binary_input, geometry_input, language_input,
                         pixel_display, record_log
                     )).props("dense color=teal").classes("font-bold")
-            ingest_log = ui.log(max_lines=8).classes("w-full text-xs font-mono h-24 bg-slate-900 text-cyan-300")
             ingest_stats = ui.label("Ready").classes("text-xs text-slate-500 mt-2")
+            
+            # --- SOC 2/3 Compliance Ingestion Logs ---
+            with ui.expansion("📋 SOC 2/3 Compliance Ingestion Logs", icon="verified_user").classes("w-full border border-cyan-100 rounded mt-2 bg-slate-950"):
+                with ui.row().classes("w-full justify-between items-center px-2 py-1"):
+                    ui.label("Audited Data Lineage & Signatures").classes("text-[11px] font-semibold text-cyan-300 font-mono")
+                    ui.button("Load History", on_click=lambda: _load_audit_history()).props("dense color=cyan text-xs outline")
+                audit_log = ui.log(max_lines=15).classes("w-full text-xs font-mono h-24 bg-slate-950 text-cyan-200 p-1")
+                
+                def _load_audit_history():
+                    audit_log.clear()
+                    from stage1.core.soc_compliance import IngestionComplianceEngine
+                    history = IngestionComplianceEngine.get_audit_history()
+                    if not history:
+                        audit_log.push("No compliance records found.")
+                        return
+                    for h in history:
+                        audit_log.push(f"[{h['timestamp']}] {h['source']}: Raw={h['raw_record_count']} | Clean={h['unique_record_count']} | Skip={h['duplicates_skipped']}")
+                        audit_log.push(f"  └─ Signature: {h['corpus_sha256_signature']}")
+                
+                # Expose the refresh function for auto-trigger
+                stage1_view.refresh_audit = _load_audit_history
+                # Run once on startup
+                ui.timer(0.5, _load_audit_history, once=True)
         
         ui.separator()
         
         # === M-SCALAR CONTROLS ===
         ui.label("M-Scalar Engine").classes("text-lg font-bold")
-        with ui.row().classes("gap-2"):
+        
+        # New Model & Engine Configuration Panel (L1 weight selector & mode toggle)
+        with ui.row().classes("w-full items-center gap-4 bg-slate-900/50 p-2 rounded border border-cyan-500/20"):
+            ui.label("L1 Engine Mode:").classes("text-xs font-semibold text-slate-400 font-mono")
+            engine_mode_toggle = ui.radio(["Analytical", "Neural"], value="Analytical").props("inline color=cyan text-color=slate-100")
+            
+            ui.label("L1 Weight Checkpoint:").classes("text-xs font-semibold text-slate-400 font-mono ml-4")
+            
+            l1_files, _ = scan_checkpoints()
+            l1_options = {f["value"]: f["label"] for f in l1_files}
+            
+            default_l1 = "simulated"
+            for f in l1_files:
+                if "layer1_combined" in f["name"]:
+                    default_l1 = f["value"]
+                    break
+            
+            l1_sel = ui.select(options=l1_options, value=default_l1).classes("w-72").props("dense outline color=cyan")
+            
+            # Change listeners
+            def on_engine_change():
+                update_engine_mode(engine_mode_toggle.value, l1_sel.value, record_log)
+                
+            engine_mode_toggle.on_value_change(on_engine_change)
+            l1_sel.on_value_change(on_engine_change)
+
+        with ui.row().classes("gap-2 mt-2"):
             stimulus_input = ui.number(label="Stimulus", value=1.0, min=0, max=100, step=0.1)
             ui.button("Compute M-Scalars", on_click=lambda: compute_and_display(stimulus_input.value, m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, record_log, binary_input, geometry_input, language_input, pixel_display)).props("dense")
         
