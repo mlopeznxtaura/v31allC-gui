@@ -425,6 +425,7 @@ def stage2_view() -> None:
                 batch_input = ui.number(label="Batch Size", value=16, min=1, max=128, step=1).classes("w-20")
                 lr_input = ui.number(label="Learning Rate", value=0.001, min=1e-5, max=0.1, format="%.5f").classes("w-24")
                 train_btn = ui.button("Start Training").props("dense color=purple icon=school")
+                oneshot_train_btn = ui.button("⚡ 1-SHOT AUTO-TRAIN").props("dense color=fuchsia icon=bolt").classes("font-bold")
 
             # Live loss reduction chart
             ui.label("Epoch Loss Reduction Chart:").classes("text-xs text-slate-500 mt-2")
@@ -570,4 +571,13 @@ def stage2_view() -> None:
                     train_btn.enable()
                     train_btn.set_text("Start Training")
 
+            async def _one_shot_train():
+                corpus_path_sel.set_value("output/corpus_baby_ingested.jsonl")
+                epochs_input.set_value(15)
+                batch_input.set_value(16)
+                lr_input.set_value(0.001)
+                await asyncio.sleep(0.1)
+                await _run_training()
+
+            oneshot_train_btn.on("click", _one_shot_train)
             train_btn.on("click", _run_training)

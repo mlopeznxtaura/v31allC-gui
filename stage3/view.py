@@ -37,6 +37,7 @@ _classical_engine: V31InferenceEngine | None = None
 _neural_engine: V31NeuralInferenceEngine | None = None
 _infer_history: list[dict] = []
 _replay_results: list[dict] = []
+_last_record_mode_index = 0
 
 
 def _get_active_engine(is_neural: bool) -> V31InferenceEngine | V31NeuralInferenceEngine:
@@ -150,6 +151,7 @@ def stage3_view() -> None:
             with ui.row().classes("gap-3 items-end mt-1"):
                 infer_stim   = ui.number(label="Stimulus", value=1.0, min=0.1, max=10.0, step=0.1).classes("w-24")
                 infer_btn    = ui.button("▶ Infer").props("dense color=rose")
+                oneshot_infer_btn = ui.button("⚡ 1-SHOT AUTO-INFER").props("dense color=pink icon=bolt").classes("font-bold")
                 reset_btn    = ui.button("↺ Reset Engine").props("dense outline color=rose")
 
             # output fields — 9 fields
@@ -282,6 +284,12 @@ def stage3_view() -> None:
                 except Exception as ex:
                     infer_log.push(f"✗ Export Model Error: {ex}")
 
+            def _one_shot_infer():
+                engine_mode_toggle.set_value(True)
+                _get_active_engine(is_neural=True)
+                _run_infer()
+
+            oneshot_infer_btn.on("click", _one_shot_infer)
             infer_btn.on("click", lambda: _run_infer())
             reset_btn.on("click", lambda: _reset())
             
@@ -710,9 +718,18 @@ def stage3_view() -> None:
                 "Record the host Windows desktop asynchronously using native FFmpeg."
             ).classes("text-xs text-slate-500 mb-2")
 
-            with ui.row().classes("gap-3 items-end w-full"):
+            with ui.row().classes("gap-3 items-end w-full flex-wrap"):
                 rec_duration = ui.number(label="Duration (sec)", value=3.0, min=1.0, max=60.0, step=1.0).classes("w-24")
                 rec_fps      = ui.number(label="Framerate (fps)", value=10.0, min=5.0, max=30.0, step=5.0).classes("w-24")
+                rec_mode     = ui.select(
+                    label="Recording Scope / Complexity", 
+                    options=[
+                        "Full Desktop 🖥", 
+                        "Chrome Browser Only (1/3 Complexity) 🌐",
+                        "Cycle Both Modes 🔀 (1,2,1,2...)"
+                    ], 
+                    value="Full Desktop 🖥"
+                ).classes("w-72")
                 rec_btn      = ui.button("▶ Start Recording").props("dense color=teal")
 
             # status & video preview
@@ -750,11 +767,29 @@ def stage3_view() -> None:
                 rec_status.classes(remove="text-teal-600 text-rose-600")
                 rec_status.classes(add="text-rose-600 font-bold")
                 
+                mode = rec_mode.value
+                global _last_record_mode_index
+                
+                target_input = "desktop"
+                actual_mode_name = "Full Desktop"
+                
+                if mode == "Chrome Browser Only (1/3 Complexity) 🌐":
+                    target_input = "title=NextAura v31 TriSplit GUI"
+                    actual_mode_name = "Chrome Window"
+                elif mode == "Cycle Both Modes 🔀 (1,2,1,2...)":
+                    if _last_record_mode_index % 2 == 0:
+                        target_input = "desktop"
+                        actual_mode_name = "Cycle (Full Desktop)"
+                    else:
+                        target_input = "title=NextAura v31 TriSplit GUI"
+                        actual_mode_name = "Cycle (Chrome Window)"
+                    _last_record_mode_index += 1
+                
                 cmd = [
                     "ffmpeg.exe",
                     "-f", "gdigrab",
                     "-framerate", str(fps),
-                    "-i", "desktop",
+                    "-i", target_input,
                     "-t", str(duration),
                     "-y", win_path
                 ]
@@ -768,13 +803,38 @@ def stage3_view() -> None:
                     
                     # Live countdown in GUI
                     for sec in range(int(duration), 0, -1):
-                        rec_status.set_text(f"🔴 RECORDING DESKTOP... {sec}s remaining")
+                        rec_status.set_text(f"🔴 RECORDING [{actual_mode_name}]... {sec}s remaining")
                         await asyncio.sleep(1.0)
                         
                     stdout, stderr = await proc.communicate()
+                    returncode = proc.returncode
                     
-                    if proc.returncode == 0 and output_file_wsl.exists():
-                        rec_status.set_text(f"✓ Video recorded successfully! ({output_filename})")
+                    # Fallback if window capture fails
+                    if returncode != 0 and target_input != "desktop":
+                        rec_status.set_text("⚠️ WINDOW CAPTURE FAILED. FALLING BACK TO DESKTOP...")
+                        await asyncio.sleep(0.5)
+                        
+                        cmd_fallback = [
+                            "ffmpeg.exe",
+                            "-f", "gdigrab",
+                            "-framerate", str(fps),
+                            "-i", "desktop",
+                            "-t", str(duration),
+                            "-y", win_path
+                        ]
+                        proc_fb = await asyncio.create_subprocess_exec(
+                            *cmd_fallback,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+                        for sec in range(int(duration), 0, -1):
+                            rec_status.set_text(f"🔴 FALLBACK RECORDING DESKTOP... {sec}s remaining")
+                            await asyncio.sleep(1.0)
+                        stdout, stderr = await proc_fb.communicate()
+                        returncode = proc_fb.returncode
+                    
+                    if returncode == 0 and output_file_wsl.exists():
+                        rec_status.set_text(f"✓ Video recorded successfully! [{actual_mode_name}] ({output_filename})")
                         rec_status.classes(remove="text-rose-600")
                         rec_status.classes(add="text-emerald-600 font-bold")
                         
@@ -782,7 +842,7 @@ def stage3_view() -> None:
                         video_url = f"/static/recordings/{output_filename}"
                         video_player.set_source(video_url)
                         download_link.props(f'href="{video_url}" target="_blank"')
-                        ui.notify("Screen recording completed!", type="positive")
+                        ui.notify(f"Screen recording completed! [{actual_mode_name}]", type="positive")
                     else:
                         err_msg = stderr.decode(errors="ignore").strip().split("\n")[-1]
                         rec_status.set_text(f"✗ Recording failed: {err_msg}")

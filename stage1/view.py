@@ -101,9 +101,27 @@ def _run_batch(parsed, source_name, ingest_log, ingest_stats):
     rows = []
     for rec in parsed:
         si = rec.get("scalar_inputs", {}) if isinstance(rec.get("scalar_inputs"), dict) else {}
-        lang = si.get("language") or rec.get("description") or rec.get("language") or rec.get("text") or ""
-        geo  = si.get("geometry") or rec.get("analysis") or rec.get("geometry") or rec.get("phase") or ""
-        bin_ = si.get("binary") or str(rec.get("step") or rec.get("entry_id") or rec.get("binary") or "")
+        
+        # Support both modern lowcase/nested schema and raw capitalized keys from baby models
+        lang = str(si.get("language") or 
+                   rec.get("LanguageContext") or 
+                   rec.get("language_text") or 
+                   rec.get("description") or 
+                   rec.get("language") or 
+                   rec.get("text") or "")
+                
+        geo  = str(si.get("geometry") or 
+                   rec.get("Geometry") or 
+                   rec.get("geometry_text") or 
+                   rec.get("analysis") or 
+                   rec.get("geometry") or 
+                   rec.get("phase") or "")
+                
+        bin_ = str(si.get("binary") or 
+                   rec.get("Binary") or 
+                   rec.get("binary_text") or 
+                   rec.get("step") or rec.get("entry_id") or rec.get("binary") or "")
+                
         if not lang and not geo:
             continue
         rows.append({"binary_text": bin_[:300], "geometry_text": geo[:400], "language_text": lang[:600]})
@@ -141,6 +159,40 @@ def handle_paste(content, ingest_log, ingest_stats):
     except Exception as ex:
         ingest_log.push(f"Error: {str(ex)}")
         _recorder.log_error("Paste failed", ex)
+
+def one_shot_auto_ingest(ingest_log, ingest_stats):
+    try:
+        pt_corpus_dir = Path("D:/NextAura/v31all_1/Pt's/Corpus")
+        if not pt_corpus_dir.exists():
+            pt_corpus_dir = Path("/mnt/d/NextAura/v31all_1/Pt's/Corpus")
+        if not pt_corpus_dir.exists():
+            pt_corpus_dir = Path(__file__).resolve().parent.parent.parent.parent / "Pt's" / "Corpus"
+            
+        if not pt_corpus_dir.exists():
+            ingest_log.push(f"Error: Corpus dir {pt_corpus_dir} not found.")
+            return
+            
+        ingest_log.push("Starting 1-Shot Auto-Ingest of all 13 baby model files...")
+        
+        all_parsed = []
+        for i in range(1, 14):
+            file_path = pt_corpus_dir / f"{i}.jsonl"
+            if file_path.exists():
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+                parsed = Stage1Ingest.parse_json(content)
+                all_parsed.extend(parsed)
+                ingest_log.push(f"  - Loaded {len(parsed)} records from {file_path.name}")
+                
+        if not all_parsed:
+            ingest_log.push("Error: No records loaded.")
+            return
+            
+        ingest_log.push(f"Total parsed: {len(all_parsed)} records. Running GPU batch build...")
+        _run_batch(all_parsed, "one_shot_auto_ingest", ingest_log, ingest_stats)
+        _auto_compute_after_ingest()
+        ingest_log.push("✅ 1-Shot Ingestion Complete!")
+    except Exception as ex:
+        ingest_log.push(f"Error: {str(ex)}")
 
 def build_record(binary_input, geometry_input, language_input, record_log, pixel_display):
     try:
@@ -247,9 +299,11 @@ def stage1_view() -> None:
             with ui.row().classes("w-full gap-2"):
                 upload_area = ui.upload(on_upload=lambda e: handle_upload(e, ingest_log, ingest_stats)).classes("flex-1")
                 upload_area.props("accept=.json,.csv,.txt,.jsonl max-file-size=52428800")
-            with ui.row().classes("gap-2 w-full"):
+            with ui.row().classes("gap-2 w-full items-center"):
                 paste_input = ui.textarea(label="Or paste JSON/CSV/weights", placeholder="Paste content here...").classes("flex-1 h-24")
-                ui.button("Ingest Pasted", on_click=lambda: handle_paste(paste_input.value, ingest_log, ingest_stats)).props("dense color=cyan")
+                with ui.column().classes("gap-2"):
+                    ui.button("Ingest Pasted", on_click=lambda: handle_paste(paste_input.value, ingest_log, ingest_stats)).props("dense color=cyan")
+                    ui.button("⚡ 1-SHOT AUTO-INGEST", on_click=lambda: one_shot_auto_ingest(ingest_log, ingest_stats)).props("dense color=teal").classes("font-bold")
             ingest_log = ui.log(max_lines=8).classes("w-full text-xs font-mono h-24 bg-slate-900 text-cyan-300")
             ingest_stats = ui.label("Ready").classes("text-xs text-slate-500 mt-2")
         
