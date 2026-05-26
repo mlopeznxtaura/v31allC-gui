@@ -889,3 +889,105 @@ def stage2_view() -> None:
                     sim_seq_input.set_value(2048)
             
             model_scale_sel.on("value_change", _update_presets)
+
+        # ══════════════════════════════════════════════════════════════════════
+        # PANEL G — Git Version Control & Self-Healing Guard
+        # ══════════════════════════════════════════════════════════════════════
+        with ui.card().classes("w-full border border-indigo-300 p-3 bg-slate-950 text-slate-100"):
+            with ui.row().classes("w-full items-center gap-2 mb-1"):
+                ui.label("🛡 Git Version Control & Self-Healing Guard").classes("font-semibold text-indigo-400 text-sm")
+                ui.badge("Stable State Integration Guard").props("color=indigo")
+            
+            ui.label(
+                "Executes the full WSL Stage 3 integration test suite to validate current weights, "
+                "telemetry trajectory, and code logic. If all checks pass, automatically registers "
+                "modified files and commits them with conventional headers containing current performance metrics."
+            ).classes("text-xs text-slate-400 mb-3")
+
+            with ui.row().classes("gap-3 w-full items-center flex-wrap"):
+                run_guard_btn = ui.button("EXECUTE AUTO-COMMIT GUARD").props("dense color=indigo icon=shield").classes("font-bold text-slate-950")
+                show_commits_btn = ui.button("VIEW RECENT COMMITS").props("dense color=indigo outline icon=history")
+
+            # Terminal log output
+            ui.label("Git Guard Execution Logs:").classes("text-[10px] font-bold uppercase tracking-wider text-indigo-300 font-mono mt-2")
+            guard_log = ui.log(max_lines=30).classes(
+                "w-full text-xs font-mono h-44 bg-slate-900 text-indigo-200 mt-1"
+            )
+
+            import sys
+
+            async def _run_git_guard():
+                run_guard_btn.disable()
+                run_guard_btn.set_text("Validating...")
+                guard_log.clear()
+                guard_log.push("▶ Starting Automated Git Test Guard transaction...")
+                
+                try:
+                    # Run git_test_guard.py using the current Python interpreter
+                    proc = await asyncio.create_subprocess_exec(
+                        sys.executable, str(ROOT_DIR / "git_test_guard.py"),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        cwd=str(ROOT_DIR)
+                    )
+                    
+                    # Read and stream stdout asynchronously
+                    while True:
+                        line = await proc.stdout.readline()
+                        if not line:
+                            break
+                        guard_log.push(line.decode().rstrip())
+                        
+                    # Read and stream stderr asynchronously
+                    while True:
+                        line = await proc.stderr.readline()
+                        if not line:
+                            break
+                        guard_log.push(f"⚠️ {line.decode().rstrip()}")
+                        
+                    await proc.wait()
+                    
+                    if proc.returncode == 0:
+                        guard_log.push("────────────────────────────────────────────────────────────────")
+                        guard_log.push("🎉 [GUARD PASSED] Git transaction completed successfully!")
+                        ui.notify("Git transaction committed successfully!", type="positive")
+                    else:
+                        guard_log.push("────────────────────────────────────────────────────────────────")
+                        guard_log.push("🚨 [GUARD ABORTED] Tests failed or no staged changes. Transaction reverted.")
+                        ui.notify("Git transaction aborted or failed.", type="warning")
+                        
+                except Exception as ex:
+                    guard_log.push(f"❌ Error during execution: {ex}")
+                    ui.notify(f"Execution failed: {ex}", type="negative")
+                finally:
+                    run_guard_btn.enable()
+                    run_guard_btn.set_text("EXECUTE AUTO-COMMIT GUARD")
+
+            def _show_recent_commits():
+                guard_log.clear()
+                guard_log.push("▶ Reading recent repository commits from git log...")
+                try:
+                    import subprocess
+                    res = subprocess.run(
+                        ["git", "log", "-n", "8", "--oneline"],
+                        capture_output=True,
+                        text=True,
+                        cwd=str(ROOT_DIR)
+                    )
+                    if res.returncode == 0:
+                        lines = res.stdout.strip().split("\n")
+                        guard_log.push("────────────────────────────────────────────────────────────────")
+                        guard_log.push("📋 RECENT COMMITS:")
+                        for line in lines:
+                            guard_log.push(f"  └─ {line}")
+                        guard_log.push("────────────────────────────────────────────────────────────────")
+                    else:
+                        guard_log.push(f"❌ Git log error: {res.stderr}")
+                except Exception as ex:
+                    guard_log.push(f"❌ Exception querying git log: {ex}")
+
+            run_guard_btn.on("click", _run_git_guard)
+            show_commits_btn.on("click", _show_recent_commits)
+            
+            # Show commits on startup inside the widget
+            ui.timer(1.5, _show_recent_commits, once=True)
