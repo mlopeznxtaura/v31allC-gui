@@ -13,7 +13,13 @@ class TerminalStreamRedirector:
         self._is_redirected_mirror = True
 
     def write(self, text):
-        self.original_stream.write(text)
+        try:
+            self.original_stream.write(text)
+        except Exception:
+            try:
+                self.original_stream.write(text.encode('ascii', errors='ignore').decode('ascii'))
+            except Exception:
+                pass
         if text:
             terminal_log_queue.put(text)
 
