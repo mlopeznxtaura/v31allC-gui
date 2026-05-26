@@ -20,9 +20,11 @@ Three equal-focus panels:
 
 from nicegui import ui
 from stage3.inference_engine.main import V31InferenceEngine
+from stage3.inference_engine.neural_inference import V31NeuralInferenceEngine
 from stage2.dag_compiler.phase_gate import CONVERGENCE_ACTIONS
 from stage1.core.triangulation import ACTION_VOCAB
 import json, time, math
+import numpy as np
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -31,21 +33,76 @@ TELEMETRY_DIR = ROOT_DIR / "telemetry"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── module-level state ─────────────────────────────────────────────────────────
-_engine: V31InferenceEngine | None = None
+_classical_engine: V31InferenceEngine | None = None
+_neural_engine: V31NeuralInferenceEngine | None = None
 _infer_history: list[dict] = []
 _replay_results: list[dict] = []
 
 
-def _get_engine() -> V31InferenceEngine:
-    global _engine
-    if _engine is None:
-        _engine = V31InferenceEngine()
-    return _engine
+def _get_active_engine(is_neural: bool) -> V31InferenceEngine | V31NeuralInferenceEngine:
+    global _classical_engine, _neural_engine
+    if is_neural:
+        if _neural_engine is None:
+            _neural_engine = V31NeuralInferenceEngine(checkpoint_path="models/v31_neural_model.pt")
+        # seamless hot-reload weights
+        _neural_engine.load_weights("models/v31_neural_model.pt")
+        return _neural_engine
+    else:
+        if _classical_engine is None:
+            _classical_engine = V31InferenceEngine()
+        return _classical_engine
 
 
-def _reset_engine():
-    global _engine
-    _engine = None
+def _reset_engines():
+    global _classical_engine, _neural_engine
+    _classical_engine = None
+    _neural_engine = None
+
+
+def generate_svg_grid(pixels: list[float], is_neural: bool = False) -> str:
+    if not pixels or len(pixels) != 224:
+        pixels = [0.0] * 224
+        
+    rows, cols = 14, 16
+    rects = []
+    for r in range(rows):
+        for c in range(cols):
+            val = pixels[r * cols + c]
+            val_clamped = min(max(val, 0.0), 255.0)
+            
+            if is_neural:
+                # Glowing violet-purple monochrome scale
+                red = int(val_clamped * 0.65)
+                green = int(val_clamped * 0.25)
+                blue = int(val_clamped)
+            else:
+                # Glowing amber monochrome scale
+                red = int(val_clamped)
+                green = int(val_clamped * 0.70)
+                blue = int(val_clamped * 0.15)
+                
+            rects.append(
+                f'<rect x="{c}" y="{r}" width="0.9" height="0.9" rx="0.15" '
+                f'fill="rgb({red},{green},{blue})" />'
+            )
+            
+    svg_body = "\n".join(rects)
+    return (
+        f'<svg viewBox="0 0 16 14" width="100%" height="100%" '
+        f'style="background-color: #030712; border-radius: 4px; padding: 2px;">\n'
+        f'{svg_body}\n'
+        f'</svg>'
+    )
+
+
+def generate_classical_pattern(v: float) -> list[float]:
+    pattern = []
+    for r in range(14):
+        for c in range(16):
+            dist = math.sqrt((r - 6.5)**2 + (c - 7.5)**2)
+            val = 127.0 + 127.0 * math.sin(dist - v * 20.0)
+            pattern.append(min(max(val, 0.0), 255.0))
+    return pattern
 
 
 def _gate_color(status: str) -> str:
@@ -67,7 +124,10 @@ def stage3_view() -> None:
         # PANEL A — Inference Engine
         # ══════════════════════════════════════════════════════════════════════
         with ui.card().classes("w-full border border-rose-300 p-3"):
-            ui.label("🧠 Inference Engine").classes("font-semibold text-rose-700 text-sm")
+            with ui.row().classes("gap-3 items-center w-full justify-between mb-1"):
+                ui.label("🧠 Inference Engine").classes("font-semibold text-rose-700 text-sm")
+                engine_mode_toggle = ui.toggle({False: "Analytical ⚪", True: "Neural (PyTorch) 🟣"}, value=False).props("unelevated toggle-color=rose text-xs")
+            
             ui.label(
                 "7-input stateful inference. M1/M2/M3 + Triangulation state persist across turns."
             ).classes("text-xs text-slate-500 mb-2")
@@ -103,12 +163,19 @@ def stage3_view() -> None:
                         lbl = ui.label("—").classes("text-base font-mono font-bold")
                         out_fields[key] = lbl
 
-            # NFP / LTO full text
-            with ui.row().classes("gap-2 w-full mt-1"):
+            # NFP / LTO full text & Synthesized Visual Grid
+            with ui.row().classes("gap-2 w-full mt-1 items-stretch"):
                 nfp_card = ui.card().classes("flex-1 p-2")
                 with nfp_card:
                     ui.label("next_frame_prediction").classes("text-xs text-slate-500")
                     nfp_lbl = ui.label("—").classes("text-xs font-mono")
+                
+                # Live 14x16 Matrix Canvas
+                canvas_card = ui.card().classes("w-44 p-2 items-center justify-center bg-slate-950 border border-slate-800")
+                with canvas_card:
+                    ui.label("synthesized_visual_frame").classes("text-xs text-slate-400 mb-1 font-mono")
+                    visual_grid_html = ui.html(generate_svg_grid([0.0]*224, is_neural=False)).classes("w-36 h-30")
+                
                 lto_card = ui.card().classes("flex-1 p-2")
                 with lto_card:
                     ui.label("language_token_output").classes("text-xs text-slate-500")
@@ -132,8 +199,12 @@ def stage3_view() -> None:
             )
 
             def _run_infer():
-                eng = _get_engine()
+                is_n = bool(engine_mode_toggle.value)
+                eng = _get_active_engine(is_n)
                 try:
+                    if is_n and not getattr(eng, "is_loaded", False):
+                        ui.notify("Neural model weights not found. Running wave fallback.", type="warning")
+
                     result = eng.infer(
                         binary_text=infer_binary.value,
                         geometry_text=infer_geometry.value,
@@ -152,6 +223,13 @@ def stage3_view() -> None:
                     nfp_lbl.set_text(result.get("next_frame_prediction", "—"))
                     lto_lbl.set_text(result.get("language_token_output", "—"))
 
+                    # update visual grid
+                    if is_n and "neural_frame" in result:
+                        grid_pixels = result["neural_frame"]
+                    else:
+                        grid_pixels = generate_classical_pattern(result["V"])
+                    visual_grid_html.set_content(generate_svg_grid(grid_pixels, is_neural=is_n))
+
                     # update V chart
                     v_vals = [r["V"] for r in _infer_history[-30:]]
                     v_chart.options["xAxis"]["data"] = [str(i+1) for i in range(len(v_vals))]
@@ -159,8 +237,9 @@ def stage3_view() -> None:
                     v_chart.update()
 
                     gate = result["gate_status"]
+                    mode_lbl = "NEURAL" if is_n else "CLASSICAL"
                     infer_log.push(
-                        f"[turn {result['turn']}] V={result['V']:.4f} "
+                        f"[{mode_lbl} | turn {result['turn']}] V={result['V']:.4f} "
                         f"gate={gate} lto={result['language_token_output']}"
                     )
                     infer_log.push(
@@ -172,16 +251,17 @@ def stage3_view() -> None:
                     infer_log.push(f"✗ Inference error: {ex}")
 
             def _reset():
-                _reset_engine()
+                _reset_engines()
                 _infer_history.clear()
                 for lbl in out_fields.values():
                     lbl.set_text("—")
                 nfp_lbl.set_text("—")
                 lto_lbl.set_text("—")
+                visual_grid_html.set_content(generate_svg_grid([0.0]*224, is_neural=False))
                 v_chart.options["xAxis"]["data"] = []
                 v_chart.options["series"][0]["data"] = []
                 v_chart.update()
-                infer_log.push("↺ Engine reset — new M1/M2/M3/Triangulation state.")
+                infer_log.push("↺ Engines reset — fresh classical & neural states.")
 
             def _export_infer():
                 if not _infer_history:
@@ -213,7 +293,10 @@ def stage3_view() -> None:
         # PANEL B — Corpus Replay
         # ══════════════════════════════════════════════════════════════════════
         with ui.card().classes("w-full border border-indigo-300 p-3"):
-            ui.label("▶▶ Corpus Replay").classes("font-semibold text-indigo-700 text-sm")
+            with ui.row().classes("gap-3 items-center w-full justify-between mb-1"):
+                ui.label("▶▶ Corpus Replay").classes("font-semibold text-indigo-700 text-sm")
+                replay_mode_toggle = ui.toggle({False: "Analytical ⚪", True: "Neural (PyTorch) 🟣"}, value=False).props("unelevated toggle-color=indigo text-xs")
+            
             ui.label(
                 "Load a v31 JSONL corpus and replay every record through a fresh inference engine."
             ).classes("text-xs text-slate-500 mb-2")
@@ -221,10 +304,17 @@ def stage3_view() -> None:
             with ui.row().classes("gap-3 items-end w-full"):
                 replay_path_input = ui.input(
                     label="Corpus JSONL path",
-                    value=str(OUTPUT_DIR / "corpus_4563.jsonl"),
+                    value="corpus_v31_sample.jsonl",
                 ).classes("flex-1")
                 replay_btn = ui.button("▶ Replay (Instant)").props("dense color=indigo")
                 replay_live_btn = ui.button("▶ Replay (Live)").props("dense color=emerald")
+
+            # Replay LED Dot Matrix Display!
+            with ui.row().classes("w-full mt-1 items-center justify-center"):
+                replay_canvas_card = ui.card().classes("w-44 p-2 items-center justify-center bg-slate-950 border border-slate-800")
+                with replay_canvas_card:
+                    ui.label("replay_visual_frame").classes("text-xs text-slate-400 mb-1 font-mono")
+                    replay_grid_html = ui.html(generate_svg_grid([0.0]*224, is_neural=False)).classes("w-36 h-30")
 
             # replay stats
             with ui.row().classes("gap-4 mt-1"):
@@ -258,21 +348,74 @@ def stage3_view() -> None:
                 path_str = replay_path_input.value.strip()
                 path = Path(path_str)
                 if not path.exists():
-                    # try output dir
-                    alt = OUTPUT_DIR / path.name
+                    # try root or output dir
+                    alt = ROOT_DIR / path_str
                     if alt.exists():
                         path = alt
                     else:
-                        replay_log.push(f"✗ File not found: {path_str}")
+                        alt_out = OUTPUT_DIR / Path(path_str).name
+                        if alt_out.exists():
+                            path = alt_out
+                        else:
+                            replay_log.push(f"✗ File not found: {path_str}")
+                            return
+
+                is_n = bool(replay_mode_toggle.value)
+                mode_lbl = "Neural (PyTorch) 🟣" if is_n else "Classical ⚪"
+                replay_log.push(f"▶ Replaying {path.name} using {mode_lbl}...")
+                
+                try:
+                    records = []
+                    with open(path, encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line: continue
+                            try:
+                                records.append(json.loads(line))
+                            except Exception: continue
+                    
+                    if not records:
+                        replay_log.push("✗ Corpus is empty or invalid.")
                         return
 
-                replay_log.push(f"▶ Replaying {path.name}...")
-                try:
-                    eng = V31InferenceEngine()  # fresh engine per replay
-                    results = eng.run_corpus(str(path))
-                    _replay_results = results
+                    total = len(records)
+                    if is_n:
+                        eng = V31NeuralInferenceEngine(checkpoint_path="models/v31_neural_model.pt")
+                    else:
+                        eng = V31InferenceEngine()
 
-                    v_vals    = [r["V"] for r in results]
+                    results = []
+                    v_vals = []
+                    for idx, rec in enumerate(records):
+                        si = rec.get("scalar_inputs", {})
+                        binary_text   = si.get("binary", "")   or str(rec.get("M1", ""))
+                        geometry_text = si.get("geometry", "") or str(rec.get("M2", ""))
+                        language_text = si.get("language", "") or str(rec.get("M3", ""))
+
+                        if len(geometry_text.strip()) < 20:
+                            geometry_text = (
+                                f"Entry {idx+1}/{total}. Env=Sandbox. SystemID=CASEBELIZE. "
+                                f"TelemetryStable=True. {geometry_text}".strip()
+                            )
+                        math_rel = si.get("mathematical_relationship", "")
+                        if len(language_text.strip()) < 20 and math_rel:
+                            language_text = math_rel
+
+                        res = eng.infer(
+                            binary_text=binary_text,
+                            geometry_text=geometry_text,
+                            language_text=language_text,
+                            stimulus=float(rec.get("stimulus", 1.0)),
+                            is_logical=bool(rec.get("is_logical", True)),
+                            telemetry_stable=bool(rec.get("telemetry_stable", True)),
+                            entry_index=idx + 1,
+                            total_entries=total,
+                        )
+                        res["source_record"] = rec
+                        results.append(res)
+                        v_vals.append(res["V"])
+
+                    _replay_results = results
                     v_mean    = sum(v_vals) / len(v_vals) if v_vals else 0.0
                     open_ct   = sum(1 for r in results if r["gate_status"] == "OPEN")
                     actions   = [r["language_token_output"] for r in results]
@@ -290,17 +433,17 @@ def stage3_view() -> None:
                     replay_v_chart.options["series"][0]["data"] = [round(v, 4) for v in v_vals]
                     replay_v_chart.update()
 
+                    # Render last visual grid state
+                    if is_n and "neural_frame" in results[-1]:
+                        rep_pixels = results[-1]["neural_frame"]
+                    else:
+                        rep_pixels = generate_classical_pattern(results[-1]["V"])
+                    replay_grid_html.set_content(generate_svg_grid(rep_pixels, is_neural=is_n))
+
                     replay_log.push(
-                        f"[OK] {len(results)} records | V_mean={v_mean:.4f} | "
+                        f"[OK] Replayed {len(results)} records | V_mean={v_mean:.4f} | "
                         f"gate_OPEN={open_ct} | top_action={top_action}"
                     )
-                    for r in results[:5]:
-                        replay_log.push(
-                            f"  [turn {r['turn']}] V={r['V']:.4f} gate={r['gate_status']} "
-                            f"lto={r['language_token_output']}"
-                        )
-                    if len(results) > 5:
-                        replay_log.push(f"  ... {len(results)-5} more")
                 except Exception as ex:
                     replay_log.push(f"✗ Replay error: {ex}")
 
@@ -309,38 +452,45 @@ def stage3_view() -> None:
                 path_str = replay_path_input.value.strip()
                 path = Path(path_str)
                 if not path.exists():
-                    # try output dir
-                    alt = OUTPUT_DIR / path.name
+                    # try root or output dir
+                    alt = ROOT_DIR / path_str
                     if alt.exists():
                         path = alt
                     else:
-                        replay_log.push(f"✗ File not found: {path_str}")
-                        return
+                        alt_out = OUTPUT_DIR / Path(path_str).name
+                        if alt_out.exists():
+                            path = alt_out
+                        else:
+                            replay_log.push(f"✗ File not found: {path_str}")
+                            return
 
-                replay_log.push(f"▶ [LIVE] Replaying {path.name} Turn-by-Turn...")
+                is_n = bool(replay_mode_toggle.value)
+                mode_lbl = "Neural (PyTorch) 🟣" if is_n else "Classical ⚪"
+                replay_log.push(f"▶ [LIVE] Replaying {path.name} using {mode_lbl}...")
+                
                 try:
-                    # Pre-scan count
                     records = []
                     with open(path, encoding="utf-8") as f:
                         for line in f:
                             line = line.strip()
-                            if not line:
-                                continue
+                            if not line: continue
                             try:
                                 records.append(json.loads(line))
-                            except Exception:
-                                continue
+                            except Exception: continue
 
                     if not records:
                         replay_log.push("✗ Corpus is empty or invalid.")
                         return
 
                     total = len(records)
-                    eng = V31InferenceEngine()  # fresh engine
+                    if is_n:
+                        eng = V31NeuralInferenceEngine(checkpoint_path="models/v31_neural_model.pt")
+                    else:
+                        eng = V31InferenceEngine()
+
                     _replay_results = []
                     v_vals = []
 
-                    import asyncio
                     for idx, rec in enumerate(records):
                         si = rec.get("scalar_inputs", {})
                         binary_text   = si.get("binary", "")   or str(rec.get("M1", ""))
@@ -379,6 +529,13 @@ def stage3_view() -> None:
                         replay_gate_lbl.set_text(f"gate OPEN: {open_ct}/{idx+1}")
                         replay_lto_lbl.set_text(f"action: {result['language_token_output']}")
 
+                        # Live update visual grid!
+                        if is_n and "neural_frame" in result:
+                            rep_pixels = result["neural_frame"]
+                        else:
+                            rep_pixels = generate_classical_pattern(result["V"])
+                        replay_grid_html.set_content(generate_svg_grid(rep_pixels, is_neural=is_n))
+
                         # Live update chart
                         replay_v_chart.options["xAxis"]["data"] = [str(i+1) for i in range(len(v_vals))]
                         replay_v_chart.options["series"][0]["data"] = [round(v, 4) for v in v_vals]
@@ -390,7 +547,6 @@ def stage3_view() -> None:
                             f"lto={result['language_token_output']}"
                         )
 
-                        # Smooth animated sleep
                         await asyncio.sleep(0.04)
 
                     replay_log.push(f"[OK] Live Replay Completed! {total} records successfully evaluated.")

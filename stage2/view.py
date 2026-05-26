@@ -16,6 +16,10 @@ from stage1.core.m_scalars import M1State, M2State, M3State, compute_m_scalars
 from stage1.core.triangulation import TriangulationState, triangulate, ACTION_VOCAB
 import json, time, math
 from pathlib import Path
+import torch
+import asyncio
+from stage2.training_engine.neural_model import V31Model
+from stage2.training_engine.asymmetric_trainer import AsymmetricTrainer
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 OUTPUT_DIR = ROOT_DIR / "output"
@@ -392,3 +396,178 @@ def stage2_view() -> None:
             ui.button("Export Ingested JSONL", on_click=_export_ingested).props(
                 "dense outline color=orange"
             )
+
+        # ══════════════════════════════════════════════════════════════════════
+        # PANEL E — Neural Model Training (PyTorch)
+        # ══════════════════════════════════════════════════════════════════════
+        with ui.card().classes("w-full border border-purple-300 p-3"):
+            ui.label("🧠 Neural Model Training (PyTorch)").classes("font-semibold text-purple-700 text-sm")
+            ui.label(
+                "Asynchronously train the V31Model over an ingested JSONL corpus. Saves to models/v31_neural_model.pt."
+            ).classes("text-xs text-slate-500 mb-2")
+
+            # UI Controls
+            with ui.row().classes("gap-3 items-end flex-wrap"):
+                corpus_options = ["corpus_v31_sample.jsonl", "corpus_v31_ingested.jsonl"]
+                try:
+                    for p in ROOT_DIR.glob("*.jsonl"):
+                        if p.name not in corpus_options:
+                            corpus_options.append(p.name)
+                    for p in OUTPUT_DIR.glob("*.jsonl"):
+                        rel_path = f"output/{p.name}"
+                        if rel_path not in corpus_options:
+                            corpus_options.append(rel_path)
+                except Exception:
+                    pass
+                
+                corpus_path_sel = ui.select(label="Corpus Path", options=corpus_options, value="corpus_v31_sample.jsonl", with_input=True).classes("w-64")
+                epochs_input = ui.number(label="Epochs", value=10, min=1, max=200, step=1).classes("w-20")
+                batch_input = ui.number(label="Batch Size", value=16, min=1, max=128, step=1).classes("w-20")
+                lr_input = ui.number(label="Learning Rate", value=0.001, min=1e-5, max=0.1, format="%.5f").classes("w-24")
+                train_btn = ui.button("Start Training").props("dense color=purple icon=school")
+
+            # Live loss reduction chart
+            ui.label("Epoch Loss Reduction Chart:").classes("text-xs text-slate-500 mt-2")
+            train_chart = ui.echart({
+                "title": {"text": "Training Loss", "textStyle": {"fontSize": 11}},
+                "tooltip": {"trigger": "axis"},
+                "legend": {"data": ["Total Loss", "MSE (Visual)", "CE (Action)"], "textStyle": {"fontSize": 9}, "top": 18},
+                "grid": {"top": 45, "bottom": 24, "left": 45, "right": 15},
+                "xAxis": {"type": "category", "data": [], "axisLabel": {"fontSize": 8}},
+                "yAxis": {"type": "value", "axisLabel": {"fontSize": 9}},
+                "series": [
+                    {"name": "Total Loss", "type": "line", "data": [], "itemStyle": {"color": "#a855f7"}},
+                    {"name": "MSE (Visual)", "type": "line", "data": [], "itemStyle": {"color": "#3b82f6"}},
+                    {"name": "CE (Action)", "type": "line", "data": [], "itemStyle": {"color": "#ec4899"}},
+                ],
+            }).classes("w-full h-44")
+
+            # Training log
+            train_log = ui.log(max_lines=30).classes(
+                "w-full text-xs font-mono h-28 bg-slate-900 text-purple-300 mt-1"
+            )
+
+            # Training process
+            async def _run_training():
+                train_btn.disable()
+                train_btn.set_text("Training...")
+                train_log.clear()
+                
+                corpus_path = str(corpus_path_sel.value)
+                full_path = ROOT_DIR / corpus_path
+                if not full_path.exists():
+                    train_log.push(f"❌ Error: File not found at {full_path}")
+                    train_btn.enable()
+                    train_btn.set_text("Start Training")
+                    return
+
+                epochs = int(epochs_input.value or 10)
+                batch_size = int(batch_input.value or 16)
+                lr = float(lr_input.value or 0.001)
+
+                train_log.push(f"▶ Loading corpus from {corpus_path}...")
+                train_log.push(f"  Epochs: {epochs} | Batch Size: {batch_size} | Learning Rate: {lr}")
+                
+                try:
+                    model = V31Model(vocab_size=5000, num_experts=4)
+                    trainer = AsymmetricTrainer(model, lr=lr)
+                    
+                    records = trainer.load_corpus_data(str(full_path))
+                    if not records:
+                        train_log.push(f"❌ Error: No valid v31 records loaded from {corpus_path}!")
+                        train_btn.enable()
+                        train_btn.set_text("Start Training")
+                        return
+                    
+                    train_log.push(f"✓ Loaded {len(records)} training frames.")
+                    train_log.push("▶ Initializing optimization loops...")
+                    await asyncio.sleep(0.1)
+
+                    epochs_list = []
+                    total_loss_list = []
+                    mse_loss_list = []
+                    ce_loss_list = []
+
+                    train_chart.options["xAxis"]["data"] = epochs_list
+                    train_chart.options["series"][0]["data"] = total_loss_list
+                    train_chart.options["series"][1]["data"] = mse_loss_list
+                    train_chart.options["series"][2]["data"] = ce_loss_list
+                    train_chart.update()
+
+                    for epoch in range(1, epochs + 1):
+                        model.train()
+                        epoch_loss = 0.0
+                        epoch_mse = 0.0
+                        epoch_ce = 0.0
+                        num_batches = 0
+
+                        for i in range(0, len(records), batch_size):
+                            batch = records[i : i + batch_size]
+                            
+                            m1_b = torch.tensor([f["m1"] for f in batch], dtype=torch.float32)
+                            m2_b = torch.tensor([f["m2"] for f in batch], dtype=torch.float32)
+                            m3_b = torch.tensor([f["m3"] for f in batch], dtype=torch.float32)
+                            geo_b = torch.stack([f["geo"] for f in batch])
+                            bin_b = torch.stack([f["bin"] for f in batch])
+                            lng_b = torch.stack([f["lng"] for f in batch])
+                            tri_b = torch.stack([f["tri"] for f in batch])
+                            
+                            target_frame_b = torch.stack([f["next_frame_target"] for f in batch])
+                            target_token_b = torch.tensor([f["next_token_id"] for f in batch], dtype=torch.long)
+
+                            trainer.optimizer.zero_grad()
+                            pred_frame, pred_token_logits = model(m1_b, m2_b, m3_b, geo_b, bin_b, lng_b, tri_b)
+                            
+                            loss_mse = trainer.criterion_mse(pred_frame, target_frame_b)
+                            loss_ce = trainer.criterion_ce(pred_token_logits, target_token_b)
+                            loss = loss_mse + 0.1 * loss_ce
+                            
+                            loss.backward()
+                            trainer.optimizer.step()
+                            
+                            epoch_loss += loss.item()
+                            epoch_mse += loss_mse.item()
+                            epoch_ce += loss_ce.item()
+                            num_batches += 1
+                            
+                            await asyncio.sleep(0.001)
+
+                        avg_loss = epoch_loss / max(num_batches, 1)
+                        avg_mse = epoch_mse / max(num_batches, 1)
+                        avg_ce = epoch_ce / max(num_batches, 1)
+
+                        train_log.push(
+                            f"Epoch {epoch:02d}/{epochs} | Loss: {avg_loss:.5f} | "
+                            f"MSE: {avg_mse:.5f} | CE: {avg_ce:.5f}"
+                        )
+
+                        epochs_list.append(f"E{epoch}")
+                        total_loss_list.append(avg_loss)
+                        mse_loss_list.append(avg_mse)
+                        ce_loss_list.append(avg_ce)
+
+                        train_chart.options["xAxis"]["data"] = epochs_list
+                        train_chart.options["series"][0]["data"] = total_loss_list
+                        train_chart.options["series"][1]["data"] = mse_loss_list
+                        train_chart.options["series"][2]["data"] = ce_loss_list
+                        train_chart.update()
+
+                        await asyncio.sleep(0.05)
+
+                    models_dir = ROOT_DIR / "models"
+                    models_dir.mkdir(parents=True, exist_ok=True)
+                    ckpt_path = models_dir / "v31_neural_model.pt"
+                    trainer.save_checkpoint(str(ckpt_path))
+                    
+                    train_log.push("────────────────────────────────────────────────────────────────")
+                    train_log.push(f"✅ Training COMPLETED successfully!")
+                    train_log.push(f"💾 Checkpoint saved → models/v31_neural_model.pt")
+                    ui.notify("Neural model training complete!", type="positive")
+                except Exception as ex:
+                    train_log.push(f"❌ Training error: {ex}")
+                    ui.notify(f"Training failed: {ex}", type="negative")
+                finally:
+                    train_btn.enable()
+                    train_btn.set_text("Start Training")
+
+            train_btn.on("click", _run_training)
