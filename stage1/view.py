@@ -17,12 +17,28 @@ from gui.stage3.view import scan_checkpoints
 _neural_l1 = NeuralL1State()
 _rb = RecordBuilder(total_entries=50, codebase_hash="v31all", mission="gui_run")
 _recorder = SmartRecorder(session_name="stage1_gui_session")
-_m1 = M1State()
-_m2 = M2State()
-_m3 = M3State()
-_tri = TriangulationState()
 _records = []
 _v_history = []
+
+def auto_populate_next_inputs(binary_input, geometry_input, language_input):
+    """Auto-populate the inputs for the next entry to be built by _rb"""
+    from stage1.core.layer2_scalars import BinaryScalar, GeometryScalar
+    b = BinaryScalar(
+        codebase_hash=_rb.codebase_hash,
+        mission=_rb.mission,
+        purpose="",
+        is_logical=True,
+    )
+    g = GeometryScalar(
+        entry_index=_rb._entry + 1,
+        total_entries=_rb.total_entries,
+        sandbox=_rb.sandbox,
+        system_id=_rb.system_id,
+        telemetry_stable=True,
+    )
+    binary_input.set_value(b.to_field())
+    geometry_input.set_value(g.to_field())
+    language_input.set_value(f"State progression cycle for entry {_rb._entry + 1}")
 
 def render_pixel_frame(frame_array):
     """Convert numpy array to base64 PNG"""
@@ -37,38 +53,14 @@ def render_pixel_frame(frame_array):
         return None
 
 def compute_and_display(stimulus, m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, record_log, binary_input, geometry_input, language_input, pixel_display):
-    if _rb.neural_l1 is not None and _rb.neural_l1.is_loaded:
-        progress = _rb._entry / max(_rb.total_entries, 1)
-        prev_lang = 0.5
-        prev_bin = 0.5
-        if _records:
-            prev_meta = _records[-1].get("_meta", {})
-            prev_lang = prev_meta.get("language_scalar", 0.5)
-            prev_bin = prev_meta.get("binary_scalar", 0.5)
-            
-        m1_val, m2_val, m3_val = _neural_l1.step(
-            progress=progress,
-            language_scalar=prev_lang,
-            binary_scalar=prev_bin,
-            stimulus=stimulus
-        )
-        _ = compute_m_scalars(_m1, _m2, _m3, stimulus=stimulus)
-        vals = {"M1": m1_val, "M2": m2_val, "M3": m3_val}
-    else:
-        vals = compute_m_scalars(_m1, _m2, _m3, stimulus=stimulus)
+    # Auto-populate all 7 inputs from the current (pre-step) state of _rb
+    cur_m1 = _rb._m1.exploration_depth / max(_rb._m1.branch_count, 1) if _rb._m1.branch_count else 0.0
+    cur_m2 = _rb._m2.cost_budget / (1.0 + _rb._m1.branch_count / max(_rb._m2.steps_allowed, 1))
+    cur_m3 = (_rb._m3.logic_multiplier + _rb._m3.efficiency_multiplier + _rb._m3.creative_multiplier) / 3.0
     
-    m1_val_label.set_text(f"{vals['M1']:.4f}")
-    m2_val_label.set_text(f"{vals['M2']:.4f}")
-    m3_val_label.set_text(f"{vals['M3']:.4f}")
-    
-    m1_branch_label.set_text(f"Branches: {_m1.branch_count}")
-    m2_budget_label.set_text(f"Budget: {_m2.cost_budget:.3f}")
-    m3_mult_label.set_text(f"Multiplier: {_m3.logic_multiplier:.2f}")
-    
-    # Auto-populate all 7 inputs from computed state
-    binary_input.set_value(f"stimulus={stimulus:.2f} branches={_m1.branch_count}")
-    geometry_input.set_value(f"M1={vals['M1']:.4f} M2={vals['M2']:.4f} M3={vals['M3']:.4f}")
-    language_input.set_value(f"budget={_m2.cost_budget:.3f} multiplier={_m3.logic_multiplier:.2f} depth={_m1.exploration_depth:.2f}")
+    binary_input.set_value(f"stimulus={stimulus:.2f} branches={_rb._m1.branch_count}")
+    geometry_input.set_value(f"M1={cur_m1:.4f} M2={cur_m2:.4f} M3={cur_m3:.4f}")
+    language_input.set_value(f"budget={_rb._m2.cost_budget:.3f} multiplier={_rb._m3.logic_multiplier:.2f} depth={_rb._m1.exploration_depth:.2f}")
     
     # Build record with all 7 inputs
     rec = _rb.build(
@@ -81,41 +73,31 @@ def compute_and_display(stimulus, m1_val_label, m2_val_label, m3_val_label, m1_b
     # Accumulate records for export
     _records.append(rec)
     
+    # Update UI labels, outputs, and inputs from the built record
+    _update_ui_from_last_record(
+        m1_val_label, m2_val_label, m3_val_label,
+        m1_branch_label, m2_budget_label, m3_mult_label,
+        v_label, momentum_label, nfp_label, lto_label,
+        binary_input, geometry_input, language_input,
+        pixel_display, record_log
+    )
+    
     v = rec["_meta"]["V"]
     nfp = rec["output_tokens"]["next_frame_prediction"]
     lto = rec["output_tokens"]["language_token_output"]
-    
-    v_label.set_text(f"{v:.4f}")
-    _v_history.append(v)
-    if len(_v_history) > 5:
-        _v_history.pop(0)
-    avg_momentum = sum(_v_history) / len(_v_history)
-    momentum_label.set_text(f"{avg_momentum:.4f}")
-    
-    nfp_label.set_text(str(nfp)[:100])
-    lto_label.set_text(str(lto)[:120])
-    
-    # Render pixel frame
-    if "pixel_frame_base64" in rec["_meta"]:
-        try:
-            frame_bytes = base64.b64decode(rec["_meta"]["pixel_frame_base64"])
-            frame_shape = rec["_meta"]["pixel_frame_shape"]
-            frame_array = np.frombuffer(frame_bytes, dtype=np.uint8).reshape(frame_shape)
-            img_base64 = render_pixel_frame(frame_array)
-            if img_base64:
-                pixel_display.set_source(f"data:image/png;base64,{img_base64}")
-        except Exception as e:
-            record_log.push(f"Pixel error: {e}")
+    m1_val = rec["_meta"]["M1_raw"]
+    m2_val = rec["_meta"]["M2_raw"]
+    m3_val = rec["_meta"]["M3_raw"]
     
     _recorder.log_scalar_tick(
-        M1=vals['M1'],
-        M2=vals['M2'],
-        M3=vals['M3'],
+        M1=m1_val,
+        M2=m2_val,
+        M3=m3_val,
         V=v,
         stimulus=stimulus
     )
     
-    record_log.push(f"✓ M1={vals['M1']:.4f} M2={vals['M2']:.4f} M3={vals['M3']:.4f} V={v:.4f}")
+    record_log.push(f"✓ M1={m1_val:.4f} M2={m2_val:.4f} M3={m3_val:.4f} V={v:.4f}")
     record_log.push(f"  NFP: {nfp}")
     record_log.push(f"  LTO: {lto}")
 
@@ -147,7 +129,13 @@ def _run_batch(parsed, source_name, ingest_log, ingest_stats):
                 
         if not lang and not geo:
             continue
-        rows.append({"binary_text": bin_[:300], "geometry_text": geo[:400], "language_text": lang[:600]})
+        original_outputs = rec.get("output_tokens") if isinstance(rec.get("output_tokens"), dict) else None
+        rows.append({
+            "binary_text": bin_[:300],
+            "geometry_text": geo[:400],
+            "language_text": lang[:600],
+            "original_outputs": original_outputs
+        })
     if not rows:
         ingest_log.push("No usable records found.")
         return
@@ -183,9 +171,9 @@ def _update_ui_from_last_record(m1_val_label, m2_val_label, m3_val_label, m1_bra
     m2_val_label.set_text(f"{meta.get('M2_raw', 0.0):.4f}")
     m3_val_label.set_text(f"{meta.get('M3_raw', 0.0):.4f}")
     
-    m1_branch_label.set_text(f"Branches: {_m1.branch_count}")
-    m2_budget_label.set_text(f"Budget: {_m2.cost_budget:.3f}")
-    m3_mult_label.set_text(f"Multiplier: {_m3.logic_multiplier:.2f}")
+    m1_branch_label.set_text(f"Branches: {_rb._m1.branch_count}")
+    m2_budget_label.set_text(f"Budget: {_rb._m2.cost_budget:.3f}")
+    m3_mult_label.set_text(f"Multiplier: {_rb._m3.logic_multiplier:.2f}")
     
     v = meta.get("V", 0.0)
     v_label.set_text(f"{v:.4f}")
@@ -225,6 +213,7 @@ def handle_upload(e, ingest_log, ingest_stats, m1_val_label, m2_val_label, m3_va
         ingest_log.push(f"Parsed {len(parsed)} records ({fmt}) - GPU batch build...")
         _run_batch(parsed, e.name, ingest_log, ingest_stats)
         _update_ui_from_last_record(m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, binary_input, geometry_input, language_input, pixel_display, record_log)
+        auto_populate_next_inputs(binary_input, geometry_input, language_input)
     except Exception as ex:
         ingest_log.push(f"Error: {str(ex)}")
         _recorder.log_error(f"Upload failed for {e.name}", ex)
@@ -235,8 +224,9 @@ def handle_paste(content, ingest_log, ingest_stats, m1_val_label, m2_val_label, 
         parsed = Stage1Ingest.parse_format(content, fmt)
         ingest_log.push(f"Parsed {len(parsed)} records ({fmt}) - GPU batch build...")
         _run_batch(parsed, "paste", ingest_log, ingest_stats)
-        _auto_compute_after_ingest()
+        # _auto_compute_after_ingest()
         _update_ui_from_last_record(m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, binary_input, geometry_input, language_input, pixel_display, record_log)
+        auto_populate_next_inputs(binary_input, geometry_input, language_input)
     except Exception as ex:
         ingest_log.push(f"Error: {str(ex)}")
         _recorder.log_error("Paste failed", ex)
@@ -270,13 +260,14 @@ def one_shot_auto_ingest(ingest_log, ingest_stats, m1_val_label, m2_val_label, m
             
         ingest_log.push(f"Total parsed: {len(all_parsed)} records. Running GPU batch build...")
         _run_batch(all_parsed, "one_shot_auto_ingest", ingest_log, ingest_stats)
-        _auto_compute_after_ingest()
+        # _auto_compute_after_ingest()
         _update_ui_from_last_record(m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label, binary_input, geometry_input, language_input, pixel_display, record_log)
+        auto_populate_next_inputs(binary_input, geometry_input, language_input)
         ingest_log.push("✅ 1-Shot Ingestion and UI pipeline update complete!")
     except Exception as ex:
         ingest_log.push(f"Error: {str(ex)}")
 
-def build_record(binary_input, geometry_input, language_input, record_log, pixel_display):
+def build_record(binary_input, geometry_input, language_input, record_log, pixel_display, m1_val_label, m2_val_label, m3_val_label, m1_branch_label, m2_budget_label, m3_mult_label, v_label, momentum_label, nfp_label, lto_label):
     try:
         rec = _rb.build(
             binary_text=binary_input.value or "default",
@@ -287,21 +278,18 @@ def build_record(binary_input, geometry_input, language_input, record_log, pixel
         # Accumulate records for export
         _records.append(rec)
         
-        nfp = rec["output_tokens"]["next_frame_prediction"]
-        lto = rec["output_tokens"]["language_token_output"]
+        _update_ui_from_last_record(
+            m1_val_label, m2_val_label, m3_val_label,
+            m1_branch_label, m2_budget_label, m3_mult_label,
+            v_label, momentum_label, nfp_label, lto_label,
+            binary_input, geometry_input, language_input,
+            pixel_display, record_log
+        )
+        auto_populate_next_inputs(binary_input, geometry_input, language_input)
         
         record_log.push(f"✓ Record {_rb._entry} built")
-        record_log.push(f"  NFP: {nfp}")
-        record_log.push(f"  LTO: {lto}")
-        
-        # Render frame
-        if "pixel_frame_base64" in rec["_meta"]:
-            frame_bytes = base64.b64decode(rec["_meta"]["pixel_frame_base64"])
-            frame_shape = rec["_meta"]["pixel_frame_shape"]
-            frame_array = np.frombuffer(frame_bytes, dtype=np.uint8).reshape(frame_shape)
-            img_base64 = render_pixel_frame(frame_array)
-            if img_base64:
-                pixel_display.set_source(f"data:image/png;base64,{img_base64}")
+        record_log.push(f"  NFP: {rec['output_tokens']['next_frame_prediction']}")
+        record_log.push(f"  LTO: {rec['output_tokens']['language_token_output']}")
         
         _recorder.log_record_built(
             entry_num=_rb._entry,
@@ -370,7 +358,6 @@ def update_engine_mode(mode_val, checkpoint_val, record_log):
 
 def _auto_compute_after_ingest():
     """Auto-trigger computation after data ingest"""
-    global _m1, _m2, _m3, _tri
     try:
         stimulus = 1.0
         if _rb.neural_l1 is not None and _rb.neural_l1.is_loaded:
@@ -382,16 +369,16 @@ def _auto_compute_after_ingest():
                 prev_lang = prev_meta.get("language_scalar", 0.5)
                 prev_bin = prev_meta.get("binary_scalar", 0.5)
                 
-            m1_val, m2_val, m3_val = _neural_l1.step(
+            m1_val, m2_val, m3_val = _rb.neural_l1.step(
                 progress=progress,
                 language_scalar=prev_lang,
                 binary_scalar=prev_bin,
                 stimulus=stimulus
             )
-            _ = compute_m_scalars(_m1, _m2, _m3, stimulus=stimulus)
+            _ = compute_m_scalars(_rb._m1, _rb._m2, _rb._m3, stimulus=stimulus)
             vals = {"M1": m1_val, "M2": m2_val, "M3": m3_val}
         else:
-            vals = compute_m_scalars(_m1, _m2, _m3, stimulus=stimulus)
+            vals = compute_m_scalars(_rb._m1, _rb._m2, _rb._m3, stimulus=stimulus)
         
         # Build record
         rec = _rb.build(
@@ -445,6 +432,7 @@ def stage1_view() -> None:
                         binary_input, geometry_input, language_input,
                         pixel_display, record_log
                     )).props("dense color=teal").classes("font-bold")
+            ingest_log = ui.log(max_lines=8).classes("w-full text-xs font-mono h-24 bg-slate-900 text-cyan-300")
             ingest_stats = ui.label("Ready").classes("text-xs text-slate-500 mt-2")
             
             # --- SOC 2/3 Compliance Ingestion Logs ---
@@ -570,8 +558,15 @@ def stage1_view() -> None:
             geometry_input = ui.textarea(label="Geometry Context").classes("flex-1 h-20")
         language_input = ui.textarea(label="Language Context").classes("w-full h-20")
         
+        auto_populate_next_inputs(binary_input, geometry_input, language_input)
+        
         with ui.row().classes("gap-2"):
-            ui.button("Build Record", on_click=lambda: build_record(binary_input, geometry_input, language_input, record_log, pixel_display)).props("dense color=cyan")
+            ui.button("Build Record", on_click=lambda: build_record(
+                binary_input, geometry_input, language_input, record_log, pixel_display,
+                m1_val_label, m2_val_label, m3_val_label,
+                m1_branch_label, m2_budget_label, m3_mult_label,
+                v_label, momentum_label, nfp_label, lto_label
+            )).props("dense color=cyan")
             ui.button("Export JSONL", on_click=export_jsonl).props("dense color=green")
             ui.button("Save Session Log", on_click=save_session_log).props("dense color=orange")
         
