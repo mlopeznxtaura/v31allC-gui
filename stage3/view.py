@@ -212,7 +212,7 @@ def stage3_view() -> None:
         with ui.card().classes("w-full border border-slate-300 p-4"):
             with ui.row().classes("w-full justify-between items-center mb-2 pb-2 border-b border-slate-200"):
                 ui.label("🔬 Unified Inference Arena").classes("font-semibold text-slate-800 text-sm")
-                engine_mode_toggle = ui.toggle({False: "Analytical ⚪", True: "Neural (PyTorch) 🟣"}, value=False).props("unelevated toggle-color=slate text-xs")
+                engine_mode_toggle = ui.toggle({False: "Analytical ⚪", True: "Neural (PyTorch) 🟣"}, value=False).props("unelevated toggle-color=secondary text-xs")
 
             # Model checkpoints dropdown selectors
             with ui.row().classes("w-full gap-3 items-center mb-3 flex-wrap"):
@@ -252,8 +252,8 @@ def stage3_view() -> None:
             with ui.row().classes("w-full items-center gap-3 mt-3 flex-wrap"):
                 chat_input = ui.input(placeholder="Ask the model or send a sequence query (e.g. 'Synthesize system vectors', 'Evaluate telemetry matrix')...").classes("flex-1 text-xs")
                 save_to_corpus_chk = ui.checkbox("Save to Master Corpus").classes("text-xs text-slate-600 font-semibold")
-                send_btn = ui.button(icon="send").props("color=slate flat")
-                reset_btn = ui.button("Reset Engine", on_click=lambda: _reset()).props("dense outline color=slate text-xs")
+                send_btn = ui.button(icon="send").props("color=secondary flat")
+                reset_btn = ui.button("Reset Engine", on_click=lambda: _reset()).props("dense outline color=secondary text-xs")
 
             # Inline log helper
             def _log_system_trace(text: str):
@@ -537,10 +537,9 @@ def stage3_view() -> None:
                 except Exception as ex:
                     _log_system_trace(f"✗ Export PyTorch Error: {ex}")
 
-            # Top controls footer
             with ui.row().classes("gap-2 mt-2"):
-                ui.button("Export Inference Log", on_click=_export_infer).props("dense outline color=slate text-xs")
-                ui.button("Export Active Weights (.pt)", on_click=_export_pytorch_model).props("dense outline color=slate text-xs")
+                ui.button("Export Inference Log", on_click=_export_infer).props("dense outline color=secondary text-xs")
+                ui.button("Export Active Weights (.pt)", on_click=_export_pytorch_model).props("dense outline color=secondary text-xs")
 
         # ══════════════════════════════════════════════════════════════════════
         # MASTER CORPUS AUTO-GROW DROPZONE CARD
@@ -556,7 +555,7 @@ def stage3_view() -> None:
                 upload_zone.props("accept=.json,.jsonl,.csv max-file-size=52428800 label='Ingest file data'")
                 
                 with ui.column().classes("gap-2 min-w-[200px]"):
-                    regen_btn = ui.button("Regenerate Corpus Outputs", on_click=lambda: _run_corpus_regeneration()).props("dense color=slate")
+                    regen_btn = ui.button("Regenerate Corpus Outputs", on_click=lambda: _run_corpus_regeneration()).props("dense color=secondary")
                     corpus_stats_lbl = ui.label("Querying Master Corpus statistics...").classes("text-xs font-mono text-slate-600 font-semibold")
 
             def handle_corpus_upload(e):
@@ -637,7 +636,7 @@ def stage3_view() -> None:
         with ui.card().classes("w-full border border-slate-300 p-4"):
             with ui.row().classes("w-full justify-between items-center mb-1"):
                 ui.label("▶▶ Corpus Replay").classes("font-semibold text-slate-800 text-sm")
-                replay_mode_toggle = ui.toggle({False: "Analytical ⚪", True: "Neural (PyTorch) 🟣"}, value=False).props("unelevated toggle-color=slate text-xs")
+                replay_mode_toggle = ui.toggle({False: "Analytical ⚪", True: "Neural (PyTorch) 🟣"}, value=False).props("unelevated toggle-color=secondary text-xs")
             
             ui.label(
                 "Evaluate a stored v31 JSONL corpus file record-by-record through the stateful inference pipelines."
@@ -648,8 +647,8 @@ def stage3_view() -> None:
                     label="Corpus JSONL local path",
                     value="corpus_v31_sample.jsonl",
                 ).classes("flex-1 text-xs")
-                replay_btn = ui.button("Replay (Instant)").props("dense color=slate text-xs")
-                replay_live_btn = ui.button("Replay (Live Animation)").props("dense outline color=slate text-xs")
+                replay_btn = ui.button("Replay (Instant)").props("dense color=secondary text-xs")
+                replay_live_btn = ui.button("Replay (Live Animation)").props("dense outline color=secondary text-xs")
 
             # Replay display canvas grid
             with ui.row().classes("w-full mt-2 items-center justify-center"):
@@ -870,7 +869,7 @@ def stage3_view() -> None:
 
             replay_btn.on("click", lambda: _replay_corpus())
             replay_live_btn.on("click", lambda: _replay_corpus_live())
-            ui.button("Export Replay Results", on_click=_export_replay).props("dense outline color=slate text-xs")
+            ui.button("Export Replay Results", on_click=_export_replay).props("dense outline color=secondary text-xs")
 
         # ══════════════════════════════════════════════════════════════════════
         # PANEL C — Telemetry & GCS Sync Card
@@ -882,8 +881,8 @@ def stage3_view() -> None:
             ).classes("text-xs text-slate-500 mb-2")
 
             with ui.row().classes("gap-2 items-center flex-wrap"):
-                telem_load_btn = ui.button("Refresh Gate Metrics").props("dense color=slate text-xs")
-                telem_export_btn = ui.button("Export Snapshot").props("dense outline color=slate text-xs")
+                telem_load_btn = ui.button("Refresh Gate Metrics").props("dense color=secondary text-xs")
+                telem_export_btn = ui.button("Export Snapshot").props("dense outline color=secondary text-xs")
 
             # Summary metrics
             with ui.row().classes("gap-4 mt-2 w-full justify-center"):
@@ -1006,7 +1005,7 @@ def stage3_view() -> None:
                     value="nextaura-research-vault"
                 ).classes("flex-1 text-xs min-w-[220px]")
                 
-                sync_btn = ui.button("Sync to GCS", on_click=lambda: _run_gcs_sync()).props("dense color=slate text-xs")
+                sync_btn = ui.button("Sync to GCS", on_click=lambda: _run_gcs_sync()).props("dense color=secondary text-xs")
 
             # Logs panel for GCS sync
             ui.label("Sync Action Logs:").classes("text-[9px] text-slate-400 mt-1.5 font-mono uppercase tracking-wider")
@@ -1067,7 +1066,7 @@ def stage3_view() -> None:
                     ], 
                     value="Full Desktop 🖥"
                 ).classes("w-72 text-xs")
-                rec_btn = ui.button("Record Screen").props("dense color=slate text-xs")
+                rec_btn = ui.button("Record Screen").props("dense color=secondary text-xs")
 
             # status & video preview
             rec_status = ui.label("Ready").classes("text-xs font-mono text-slate-500 mt-1")
@@ -1195,3 +1194,108 @@ def stage3_view() -> None:
                     rec_btn.enable()
 
             rec_btn.on("click", lambda: _start_recording())
+
+            # ══════════════════════════════════════════════════════════════════════
+            # PANEL G — Git Version Control & Self-Healing Guard
+            # ══════════════════════════════════════════════════════════════════════
+            with ui.card().classes("w-full border border-indigo-300 p-3 bg-slate-950 text-slate-100 mt-2"):
+                with ui.row().classes("w-full items-center gap-2 mb-1"):
+                    ui.label("🛡 Git Version Control & Self-Healing Guard").classes("font-semibold text-indigo-400 text-sm")
+                    ui.badge("Stable State Integration Guard").props("color=indigo")
+                
+                ui.label(
+                    "Executes the full WSL Stage 3 integration test suite to validate current weights, "
+                    "telemetry trajectory, and code logic. If all checks pass, automatically registers "
+                    "modified files and commits them with conventional headers containing current performance metrics."
+                ).classes("text-xs text-slate-400 mb-3")
+
+                with ui.row().classes("gap-3 w-full items-center flex-wrap"):
+                    run_guard_btn = ui.button("EXECUTE AUTO-COMMIT GUARD").props("dense color=indigo icon=shield").classes("font-bold text-slate-950")
+                    show_commits_btn = ui.button("VIEW RECENT COMMITS").props("dense color=indigo outline icon=history")
+
+                # Terminal log output
+                ui.label("Git Guard Execution Logs:").classes("text-[10px] font-bold uppercase tracking-wider text-indigo-300 font-mono mt-2")
+                guard_log = ui.log(max_lines=30).classes(
+                    "w-full text-xs font-mono h-44 bg-slate-900 text-indigo-200 mt-1"
+                )
+
+                import sys
+
+                async def _run_git_guard():
+                    run_guard_btn.disable()
+                    run_guard_btn.set_text("Validating...")
+                    guard_log.clear()
+                    guard_log.push("▶ Starting Automated Git Test Guard transaction...")
+                    
+                    try:
+                        # Run git_test_guard.py using the current Python interpreter
+                        proc = await asyncio.create_subprocess_exec(
+                            sys.executable, str(ROOT_DIR / "git_test_guard.py"),
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            cwd=str(ROOT_DIR)
+                        )
+                        
+                        # Read and stream stdout asynchronously
+                        while True:
+                            line = await proc.stdout.readline()
+                            if not line:
+                                break
+                            guard_log.push(line.decode().rstrip())
+                            
+                        # Read and stream stderr asynchronously
+                        while True:
+                            line = await proc.stderr.readline()
+                            if not line:
+                                break
+                            guard_log.push(f"⚠️ {line.decode().rstrip()}")
+                            
+                        await proc.wait()
+                        
+                        if proc.returncode == 0:
+                            guard_log.push("────────────────────────────────────────────────────────────────")
+                            guard_log.push("🎉 [GUARD PASSED] Git transaction completed successfully!")
+                            ui.notify("Git transaction committed successfully!", type="positive")
+                        else:
+                            guard_log.push("────────────────────────────────────────────────────────────────")
+                            guard_log.push("🚨 [GUARD ABORTED] Tests failed or no staged changes. Transaction reverted.")
+                            ui.notify("Git transaction aborted or failed.", type="warning")
+                            
+                    except Exception as ex:
+                        guard_log.push(f"❌ Error during execution: {ex}")
+                        ui.notify(f"Execution failed: {ex}", type="negative")
+                    finally:
+                        run_guard_btn.enable()
+                        run_guard_btn.set_text("EXECUTE AUTO-COMMIT GUARD")
+
+                def _show_recent_commits():
+                    guard_log.clear()
+                    guard_log.push("▶ Reading recent repository commits from git log...")
+                    try:
+                        import subprocess
+                        res = subprocess.run(
+                            ["git", "log", "-n", "8", "--oneline"],
+                            capture_output=True,
+                            text=True,
+                            cwd=str(ROOT_DIR)
+                        )
+                        if res.returncode == 0:
+                            lines = res.stdout.strip().split("\n")
+                            guard_log.push("────────────────────────────────────────────────────────────────")
+                            guard_log.push("📋 RECENT COMMITS:")
+                            for line in lines:
+                                guard_log.push(f"  └─ {line}")
+                            guard_log.push("────────────────────────────────────────────────────────────────")
+                        else:
+                            guard_log.push(f"❌ Git log error: {res.stderr}")
+                    except Exception as ex:
+                        guard_log.push(f"❌ Exception querying git log: {ex}")
+
+                run_guard_btn.on("click", _run_git_guard)
+                show_commits_btn.on("click", _show_recent_commits)
+                
+                # Show commits on startup inside the widget
+                ui.timer(1.5, _show_recent_commits, once=True)
+
+            # Expose stats hook
+            stage3_view.refresh_corpus_stats = _update_corpus_stats

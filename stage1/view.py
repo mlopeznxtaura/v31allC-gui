@@ -146,6 +146,19 @@ def _run_batch(parsed, source_name, ingest_log, ingest_stats):
     clean_built, metrics = IngestionComplianceEngine.process_records(built, source_name)
     
     _records.extend(clean_built)
+    
+    # Auto-grow Master Corpus
+    try:
+        from stage3.master_corpus.manager import MasterCorpusManager
+        added_to_master = MasterCorpusManager.add_clean_records(clean_built)
+        if added_to_master > 0:
+            ingest_log.push(f"📁 Auto-grew Master Corpus: +{added_to_master} new records.")
+            from gui.stage3.view import stage3_view
+            if hasattr(stage3_view, "refresh_corpus_stats"):
+                stage3_view.refresh_corpus_stats()
+    except Exception as e_mc:
+        print(f"Failed auto-growing master corpus: {e_mc}")
+
     vs = [r["_meta"]["V"] for r in clean_built]
     v_mean = sum(vs)/len(vs) if vs else 0
     v_max  = max(vs) if vs else 0
